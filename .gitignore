@@ -1,0 +1,35 @@
+# Generated dependencies and machine state; keep manifests and reviewed patches.
+node_modules/
+.runtime/
+.dsh/
+.cache/
+profile/
+captures/
+artifacts/
+*.log
+*.jsonl
+*.jsonl.zstd
+*.har
+*.dmp
+*.pid
+# Local secrets/configuration are never part of the source distribution.
+.env
+.env.*
+!.env.example
+auth.json
+auth.*.json
+credentials.json
+credentials.yaml
+credentials.yml
+.credentials.yaml
+cookies.json
+Cookies
+Login Data
+*.pem
+*.key
+*.pfx
+*.p12
+
+# Installation and reconstruction scratch; never source.
+.build/
+SOURCE-SHA256.json

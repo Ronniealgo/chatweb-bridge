@@ -1,0 +1,2620 @@
+diff --git a/dist/auth/refresh.js b/dist/auth/refresh.js
+--- a/dist/auth/refresh.js
++++ b/dist/auth/refresh.js
+@@ -16,8 +16,10 @@
+  * Throws SessionExpiredError when the underlying session cookie itself has
+  * expired (the user must `auth login` again).
+  */
+-export async function refreshToken(chrome) {
+-    const session = await chrome.fetchSession();
++export async function refreshToken(chrome, signal) {
++    signal?.throwIfAborted();
++    const session = await chrome.fetchSession(signal);
++    signal?.throwIfAborted();
+     if (!session.accessToken) {
+         throw new SessionExpiredError("ChatGPT session expired. Run `pi-chatgpt-web auth login` to re-authenticate.");
+     }
+@@ -33,7 +35,8 @@
+  * Return a valid token, refreshing through the browser only when within the
+  * skew window of expiry. Used on the hot path before each chat call.
+  */
+-export async function ensureFreshToken(chrome, skewSeconds = REFRESH_SKEW_SECONDS) {
++export async function ensureFreshToken(chrome, skewSeconds = REFRESH_SKEW_SECONDS, signal) {
++    signal?.throwIfAborted();
+     const state = readAuthState();
+     if (!state) {
+         throw new SessionExpiredError("Not logged in. Run `pi-chatgpt-web auth login` first.");
+@@ -42,7 +45,7 @@
+     if (ttl > skewSeconds)
+         return state.accessToken;
+     log.info("token near expiry, refreshing", { ttl });
+-    const refreshed = await refreshToken(chrome);
++    const refreshed = await refreshToken(chrome, signal);
+     return refreshed.accessToken;
+ }
+-//# sourceMappingURL=refresh.js.map
+\ No newline at end of file
++//# sourceMappingURL=refresh.js.map
+diff --git a/dist/browser/composer.js b/dist/browser/composer.js
+new file mode 100644
+--- /dev/null
++++ b/dist/browser/composer.js
+@@ -0,0 +1,111 @@
++// Normal UI preparation only. Never reads session material or manufactures security proofs.
++const EDITORS = ['#prompt-textarea', 'form[data-chatgpt-composer] [contenteditable="true"]', 'form[data-chatgpt-composer] textarea', '[role="textbox"][contenteditable="true"]'];
++const SEND = 'button[data-testid="send-button"], button#composer-submit-button, button[aria-label="发送"], button[aria-label="Send prompt"], button[aria-label="Send message"], button[aria-label="Send"]';
++export const transientContextError = error => /Execution context was destroyed|Cannot find context|detached|Navigating frame|Node with given id does not belong to the document/i.test(String(error?.message ?? error));
++export class BrowserPreparationError extends Error {
++    constructor(message, code = 'browser_not_ready', phase = 'prepare', submitted = false) {
++        super(message); this.name = 'BrowserPreparationError'; this.code = code;
++        this.status = 422; this.phase = phase; this.generationSubmitted = submitted;
++    }
++}
++export function inspectComposerDOM({ editors, selector: selected, send, marker, action }) {
++        const visible = el => !!el && !!(el.getBoundingClientRect().width && el.getBoundingClientRect().height);
++        const loginRequired = visible(document.querySelector('button[data-testid="login-button"], a[data-testid="login-button"], button[data-testid="login-button-mobile"], a[href="/auth/login"], button[aria-label="Log in"], button[aria-label="登录"]'));
++        const accessGate = !!document.querySelector('#challenge-running, #challenge-stage, iframe[src*="challenges.cloudflare.com"], iframe[src*="captcha"], input[type="password"]');
++        const gate = loginRequired || accessGate;
++        const pending = document.querySelector('textarea#pending-home-input');
++        for (const selector of (selected ? [selected] : editors)) {
++            const el = document.querySelector(selector);
++            if (!visible(el) || el.id === 'pending-home-input' || el.disabled || el.getAttribute('aria-disabled') === 'true') continue;
++            if (!el.isContentEditable && el.tagName !== 'TEXTAREA') continue;
++            const text = el.value ?? el.textContent ?? '';
++            // Current ChatGPT also renders a composer without a form. Search only a
++            // bounded local ancestor and accept one explicitly labelled send button.
++            const form = el.closest('form');
++            const formButtons = form ? Array.from(form.querySelectorAll(`${send}, button[type="submit"]`)).filter(visible) : [];
++            let button = formButtons.length === 1 ? formButtons[0] : null;
++            if (!button && formButtons.length < 2) for (let parent = el.parentElement, depth = 0; parent && parent !== document.body && depth < 6; parent = parent.parentElement, depth++) {
++                const candidates = Array.from(parent.querySelectorAll(send)).filter(visible);
++                if (candidates.length > 1) break;
++                if (candidates.length === 1) { button = candidates[0]; break; }
++            }
++            const sendReady = visible(button) && !button.disabled && button.getAttribute('aria-disabled') !== 'true';
++            if (action === 'submit') {
++                if (gate || !marker || text !== marker || !sendReady) return false;
++                button.click(); return true;
++            }
++            return { gate, loginRequired, ready: document.readyState !== 'loading', selector, focused: el === document.activeElement,
++                textLength: text.length, ownsText: !!marker && text === marker,
++                sendReady, hasForm: !!el.closest('form'), pending: false };
++        }
++        if (action === 'submit') return false;
++        return { gate, loginRequired, ready: false, pending: visible(pending) };
++}
++export async function composerState(page, marker = '') {
++    return page.evaluate(inspectComposerDOM, { editors: EDITORS, send: SEND, marker });
++}
++export async function prepareComposer(page, { timeoutMs = 30000, now = Date.now, wait = ms => new Promise(r => setTimeout(r, ms)), marker = 'ping', signal, onState = () => {} } = {}) {
++    const deadline = now() + timeoutMs;
++    let activatedPlaceholder = false, typed = false;
++    while (now() < deadline) {
++        if (signal?.aborted) throw new BrowserPreparationError('Request cancelled before sending.', 'browser_cancelled');
++        let state;
++        try { state = await composerState(page, marker); }
++        catch (error) { if (!transientContextError(error)) throw error; onState({contextLost:true}); await wait(250); continue; }
++        onState(state);
++        if (state.loginRequired) throw new BrowserPreparationError('The managed ChatGPT page shows a login prompt. Sign in manually in its normal window, then resume.', 'browser_login_required');
++        if (state.gate) throw new BrowserPreparationError('The managed ChatGPT page requires user attention. Resolve the login or access prompt in its normal window, then resume.', 'browser_user_action_required');
++        if (!state.ready) {
++            // Focusing the cold-page placeholder lets the application hydrate. Never type or submit it.
++            if (state.pending && !activatedPlaceholder) {
++                activatedPlaceholder = true;
++                try { await page.focus('textarea#pending-home-input'); }
++                catch (error) { if (!transientContextError(error) && !/No element|not attached/i.test(String(error?.message))) throw error; }
++            }
++            await wait(250); continue;
++        }
++        if (state.textLength && !typed) throw new BrowserPreparationError('The managed ChatGPT composer contains an unsent draft. Leave it intact and clear or send it yourself before resuming.', 'browser_draft_present');
++        if (typed && state.ownsText && state.sendReady) return { selector: state.selector, marker };
++        if (typed && state.textLength && !state.ownsText) throw new BrowserPreparationError('The managed composer changed during preparation. No send was attempted.', 'browser_draft_changed');
++        if (!state.textLength) {
++            try { await page.focus(state.selector); }
++            catch (error) {
++                if (!transientContextError(error) && !/No element|not attached/i.test(String(error?.message))) throw error;
++                await wait(250); continue;
++            }
++            let focused;
++            try { focused = await composerState(page, marker); }
++            catch (error) { if (!transientContextError(error)) throw error; await wait(250); continue; }
++            if (!focused.ready || focused.selector !== state.selector || !focused.focused) { await wait(250); continue; }
++            if (focused.textLength) {
++                if (!focused.ownsText) throw new BrowserPreparationError('The composer acquired another draft while focusing. No typing or send was attempted.', 'browser_draft_changed');
++                typed = true; await wait(250); continue;
++            }
++            typed = true;
++            try { await page.keyboard.type(marker, { delay: 20 }); }
++            catch (error) { if (!transientContextError(error)) throw error; }
++        }
++        await wait(250);
++    }
++    const error = new BrowserPreparationError('The ChatGPT composer did not become interactive before the preparation deadline. No send was attempted. Check the managed browser page and resume after it is ready.');
++    error.details = { reason: 'preparation_deadline' };
++    throw error;
++}
++export async function submitComposerOnce(page, prepared) {
++    let clicked;
++    try {
++        clicked = await page.evaluate(inspectComposerDOM, { ...prepared, send: SEND, action: 'submit' });
++    } catch {
++        throw new BrowserPreparationError('The browser connection changed while sending. Submission is uncertain; no automatic replay is permitted.', 'browser_submission_uncertain', 'submit', 'unknown');
++    }
++    if (!clicked) throw new BrowserPreparationError('The composer changed before sending. No send was attempted. Resume when the managed page is ready.');
++}
++export async function clearOwnedComposer(page, marker = 'ping') {
++    const state = await composerState(page, marker);
++    if (!state.ownsText) return;
++    await page.focus(state.selector);
++    const focused = await composerState(page, marker);
++    if (!focused.ownsText || !focused.focused) return;
++    const modifier = process.platform === 'darwin' ? 'Meta' : 'Control';
++    await page.keyboard.down(modifier); await page.keyboard.press('A'); await page.keyboard.up(modifier); await page.keyboard.press('Backspace');
++}
+diff --git a/dist/browser/operations.js b/dist/browser/operations.js
+new file mode 100644
+--- /dev/null
++++ b/dist/browser/operations.js
+@@ -0,0 +1,118 @@
++import { AsyncLocalStorage } from 'node:async_hooks';
++import { randomUUID } from 'node:crypto';
++import { createLogger } from '../log.js';
++const owners = new WeakMap(), queues = new WeakMap(), context = new AsyncLocalStorage();
++const log = createLogger('operation');
++const DEFAULT_QUEUE_LIMIT = 8, DEFAULT_WAIT_MS = 10_000;
++export function operationQueueState(chrome) {
++    return { queued: queues.get(chrome)?.length ?? 0, limit: DEFAULT_QUEUE_LIMIT };
++}
++export function operationState(chrome) {
++    const state = owners.get(chrome);
++    if (!state) return null;
++    return { requestId: state.requestId, kind: state.kind, phase: state.phase, generation_submitted: state.submitted };
++}
++export function traceOperation(chrome, event, details = {}) {
++    log.info(event, { ...operationState(chrome), ...details });
++}
++export function operationPhase(chrome, phase, submitted) {
++    const state = owners.get(chrome);
++    if (!state) return;
++    state.phase = phase;
++    if (submitted !== undefined) state.submitted = submitted;
++    traceOperation(chrome, 'phase');
++}
++function queueError(entry, code, message, status = 429) {
++    return Object.assign(new Error(message), { status, code, requestId: entry.requestId, phase: 'queue', generationSubmitted: false });
++}
++function detach(entry) {
++    clearTimeout(entry.timer);
++    entry.signal?.removeEventListener('abort', entry.onAbort);
++}
++function release(chrome, state) {
++    if (owners.get(chrome) !== state) return;
++    owners.delete(chrome);
++    const pending = queues.get(chrome);
++    while (pending?.length) {
++        const entry = pending.shift();
++        detach(entry);
++        if (entry.signal?.aborted) {
++            entry.reject(queueError(entry, 'adapter_queue_cancelled', 'The queued browser request was cancelled before submission.', 499));
++            continue;
++        }
++        if (Date.now() >= entry.deadline) {
++            entry.reject(queueError(entry, 'adapter_queue_timeout', 'The browser queue wait expired; no generation was submitted.'));
++            continue;
++        }
++        // Reserve synchronously so maintenance cannot overtake foreground FIFO.
++        owners.set(chrome, entry.state);
++        run(chrome, entry).then(entry.resolve, entry.reject);
++        break;
++    }
++    if (!pending?.length) queues.delete(chrome);
++}
++async function run(chrome, entry) {
++    const state = entry.state;
++    return context.run(state, async () => {
++        traceOperation(chrome, 'begin', { waitedMs: Date.now() - entry.createdAt });
++        try {
++            if (entry.signal?.aborted) throw queueError(entry, 'adapter_queue_cancelled', 'The browser request was cancelled before submission.', 499);
++            return await entry.action();
++        }
++        catch (error) {
++            if (error && typeof error === 'object') {
++                error.requestId ??= state.requestId;
++                error.phase ??= state.phase;
++                error.generationSubmitted ??= state.submitted;
++            }
++            traceOperation(chrome, 'failed', { code: error?.code ?? 'operation_error' });
++            throw error;
++        } finally { traceOperation(chrome, 'end'); release(chrome, state); }
++    });
++}
++export async function withBrowserOperation(chrome, kind, requestId, action, options = {}) {
++    // A failed observation can leave a browser fetch alive after its owner exits.
++    // Background work must not launch/navigate or compete with that fetch.
++    if (options.background && chrome.pendingGeneration) return;
++    const active = owners.get(chrome);
++    if (active && context.getStore() === active) {
++        if (options.signal?.aborted) throw options.signal.reason ?? new Error('The browser request was aborted.');
++        return action();
++    }
++    const entry = { requestId: typeof requestId === 'string' && /^[a-zA-Z0-9_-]{1,80}$/.test(requestId) ? requestId : randomUUID(), action, signal: options.signal, createdAt: Date.now() };
++    entry.state = { requestId: entry.requestId, kind, phase: 'acquire', submitted: false };
++    if (entry.signal?.aborted) throw queueError(entry, 'adapter_queue_cancelled', 'The browser request was cancelled before submission.', 499);
++    const pending = queues.get(chrome);
++    if (options.background && (active || pending?.length)) return;
++    if (!active && !pending?.length) {
++        owners.set(chrome, entry.state);
++        return run(chrome, entry);
++    }
++    if (!options.queue) throw queueError(entry, 'adapter_busy', 'The managed browser already has an active operation.');
++    const limit = options.maxQueued ?? DEFAULT_QUEUE_LIMIT;
++    const waitMs = options.waitTimeoutMs ?? DEFAULT_WAIT_MS;
++    if (!Number.isInteger(limit) || limit < 1 || limit > DEFAULT_QUEUE_LIMIT || !Number.isFinite(waitMs) || waitMs <= 0 || waitMs > DEFAULT_WAIT_MS)
++        throw new TypeError('The browser queue requires a limit of 1–8 and a wait of at most 10000 ms.');
++    const queue = pending ?? [];
++    if (queue.length >= limit) throw queueError(entry, 'adapter_queue_full', 'The bounded browser request queue is full; no generation was submitted.');
++    if (!pending) queues.set(chrome, queue);
++    return new Promise((resolve, reject) => {
++        Object.assign(entry, { resolve, reject });
++        entry.deadline = Date.now() + waitMs;
++        const remove = (code, message, status) => {
++            const index = queue.indexOf(entry);
++            if (index === -1) return;
++            queue.splice(index, 1);
++            if (!queue.length) queues.delete(chrome);
++            detach(entry);
++            traceOperation(chrome, 'queue-rejected', { queuedRequestId: entry.requestId, code, waitedMs: Date.now() - entry.createdAt });
++            reject(queueError(entry, code, message, status));
++        };
++        entry.onAbort = () => remove('adapter_queue_cancelled', 'The queued browser request was cancelled before submission.', 499);
++        entry.timer = setTimeout(() => remove('adapter_queue_timeout', 'The browser queue wait expired; no generation was submitted.', 429), waitMs);
++        queue.push(entry);
++        entry.signal?.addEventListener('abort', entry.onAbort, { once: true });
++        if (entry.signal?.aborted) entry.onAbort();
++        else traceOperation(chrome, 'queued', { queuedRequestId: entry.requestId, queued: queue.length });
++    });
++}
+diff --git a/dist/browser/supervisor.js b/dist/browser/supervisor.js
+--- a/dist/browser/supervisor.js
++++ b/dist/browser/supervisor.js
+@@ -1,9 +1,51 @@
+ import { mkdirSync } from "node:fs";
++import { randomUUID } from "node:crypto";
++import { performance } from "node:perf_hooks";
++import { BrowserPreparationError, composerState, prepareComposer, submitComposerOnce, clearOwnedComposer, transientContextError } from "./composer.js";
++import { withBrowserOperation, operationPhase, operationState, traceOperation } from './operations.js';
+ import { CHATGPT_ORIGIN, PATHS, ROUTES } from "../constants.js";
+ import { createLogger } from "../log.js";
+ import { SENTINEL_GLOBAL, installSentinelHook } from "./hooks.js";
+ import { requireChromePath } from "./chrome-path.js";
+ const log = createLogger("browser");
++/**
++ * Local patch (not upstream): ChatGPT rotated its composer DOM. `#prompt-textarea`
++ * is gone from the live page; a fresh chat now shows a plain `TEXTAREA#pending-home-input`
++ * while the full editor (ProseMirror-based) appears once a conversation exists.
++ * Probe every known shape, in order of specificity, instead of hard-coding one id.
++ */
++const COMPOSER_SELECTORS = [
++    "#prompt-textarea",
++    "textarea#pending-home-input",
++    'form[data-chatgpt-composer] [contenteditable="true"]',
++    'form[data-chatgpt-composer] textarea',
++    '[role="textbox"][contenteditable="true"]',
++    "textarea",
++];
++const COMPOSER_ANY = COMPOSER_SELECTORS.join(", ");
++/**
++ * Local patch (not upstream): ChatGPT re-renders while a turn is in flight, which
++ * destroys the JS execution context and makes page.evaluate reject with
++ * "Execution context was destroyed". Retry — the next document is ready shortly.
++ */
++const TRANSIENT_PAGE_ERROR = /Execution context was destroyed|Target closed|Session closed|Cannot find context|detached|Navigating frame|Node with given id does not belong to the document/i;
++async function evaluateWithRetry(page, fn, ...args) {
++    let lastErr;
++    for (let attempt = 1; attempt <= 5; attempt++) {
++        try {
++            return await page.evaluate(fn, ...args);
++        }
++        catch (err) {
++            lastErr = err;
++            const message = String(err?.message ?? err);
++            if (!TRANSIENT_PAGE_ERROR.test(message))
++                throw err;
++            log.info("transient page error; retrying evaluate", { attempt, message });
++            await new Promise((r) => setTimeout(r, 400 * attempt));
++        }
++    }
++    throw lastErr;
++}
+ export class ManagedChrome {
+     browser = null;
+     page = null;
+@@ -12,13 +54,25 @@
+     cdp = null;
+     fetchInit = null;
+     mintResolve = null;
++    mintReject = null;
++    mintMarker = null;
++    retiredMintMarkers = new Set();
+     minting = null;
+     headless;
++    closing = false;
++    closeTimeoutMs;
++    captureTimeoutMs;
++    preparationTimeoutMs;
++    navigationVersion = 0;
++    pendingComposerSubmissions = new Map();
+     constructor(opts = {}) {
+         // Default to headful: the sentinel SDK + composer do not render reliably in
+         // (new) headless Chrome, which breaks token minting. Opt into headless via
+         // PI_CHATGPT_WEB_HEADLESS=1 only for experimentation.
+         this.headless = opts.headless ?? false;
++        this.closeTimeoutMs = opts.closeTimeoutMs ?? 5000;
++        this.captureTimeoutMs = opts.captureTimeoutMs ?? 30000;
++        this.preparationTimeoutMs = opts.preparationTimeoutMs ?? 30000;
+     }
+     async loadPuppeteer() {
+         if (this.puppeteer)
+@@ -33,23 +87,89 @@
+         }
+         return this.puppeteer;
+     }
++    get pendingComposerSubmission() {
++        return this.pendingComposerSubmissions.values().next().value ?? null;
++    }
++    get generationBlocked() {
++        return !!this.pendingGeneration || !!this.pendingComposerSubmission;
++    }
++    assertNoPendingComposerSubmission() {
++        if (this.pendingComposerSubmission)
++            throw new BrowserPreparationError('An earlier browser UI submission has not confirmed cancellation. No new generation was attempted.',
++                'browser_generation_pending', 'prepare', false);
++    }
++    reconcileComposerSubmission(transaction) {
++        if (!transaction.clickSettled) return false;
++        const requests = [...transaction.requests.values()].flatMap(byId => [...byId.values()]);
++        // A different request (or the same ID on a different CDP session) cannot
++        // supply termination evidence for any still-unconfirmed request.
++        if (requests.some(request => request.state !== 'cancelled')) return false;
++        if (!requests.length && !transaction.clickNotAttempted) return false;
++        if (this.pendingComposerSubmissions.get(transaction.marker) !== transaction) return false;
++        this.pendingComposerSubmissions.delete(transaction.marker);
++        return true;
++    }
++    async cancelComposerRequest(transaction, cdp, requestId) {
++        let byId = transaction.requests.get(cdp);
++        if (!byId) transaction.requests.set(cdp, byId = new Map());
++        let request = byId.get(requestId);
++        if (request?.state === 'cancelled') return;
++        if (request?.confirmation) return request.confirmation;
++        if (!request) byId.set(requestId, request = { state: 'pending' });
++        request.state = 'pending';
++        request.confirmation = Promise.resolve().then(() =>
++            cdp.send('Fetch.failRequest', { requestId, errorReason: 'Aborted' })
++        ).then(() => {
++            request.state = 'cancelled';
++        }, error => {
++            request.state = 'unknown';
++            throw error;
++        }).finally(() => {
++            request.confirmation = null;
++            this.reconcileComposerSubmission(transaction);
++        });
++        return request.confirmation;
++    }
+     async ensureRunning() {
+-        if (this.page && !this.page.isClosed())
+-            return this.page;
++        this.assertNoPendingComposerSubmission();
++        if (this.closing)
++            throw new Error("Managed browser is closed.");
+         if (this.booting)
+             return this.booting;
++        if (this.browser?.connected && this.page && !this.page.isClosed())
++            return this.page;
++        const active = operationState(this);
++        if (this.pendingGeneration || (active && active.generation_submitted !== false))
++            throw new BrowserPreparationError('Browser reconstruction is blocked until the previous generation has confirmed termination.',
++                'browser_generation_pending', active?.phase ?? 'prepare', active?.generation_submitted ?? 'unknown');
+         this.booting = this.boot().finally(() => {
+             this.booting = null;
+         });
+         return this.booting;
+     }
+     async boot() {
++        // A closed tab or failed navigation can leave our Chrome process owning the
++        // profile. Release it before launching a replacement with the same profile.
++        // Cleanup failure must stop the launch, never create competing processes.
++        await this.releaseBrowser(this.browser);
+         const puppeteer = await this.loadPuppeteer();
+         const profileDir = PATHS.profileDir();
+         mkdirSync(profileDir, { recursive: true });
+         const executablePath = requireChromePath();
+-        log.info("launching browser", { executablePath, profileDir, headless: this.headless });
+-        this.browser = await puppeteer.launch({
++        // Local patch (not upstream): PCW_PROXY_SERVER optionally adds a proxy.
++        // Left unset by default: on this machine Chrome already reaches
++        // chatgpt.com over the system TUN route, and forcing --proxy-server to the
++        // Clash HTTP port instead leaves the page stuck on the challenge screen.
++        const proxyServer = process.env.PCW_PROXY_SERVER || "";
++        const proxyArgs = proxyServer
++            ? [`--proxy-server=${proxyServer}`, `--proxy-bypass-list=<-loopback>`]
++            : [];
++        // Local patch: PCW_CHROME_ARGS appends space-separated Chrome flags (for example
++        // --start-minimized) without touching the defaults below.
++        const extraArgs = (process.env.PCW_CHROME_ARGS || "").split(/\s+/).filter(Boolean);
++        log.info("launching browser", { executablePath, profileDir, headless: this.headless, proxyServer: proxyServer || "(system)" });
++        let browser;
++        try { browser = await puppeteer.launch({
+             headless: this.headless,
+             executablePath,
+             userDataDir: profileDir,
+@@ -59,35 +179,120 @@
+                 "--password-store=basic",
+                 "--disable-blink-features=AutomationControlled",
+                 "--disable-features=Translate,site-per-process",
++                ...proxyArgs,
++                ...extraArgs,
+             ],
+             defaultViewport: { width: 1280, height: 900 },
+-        });
+-        this.browser.on("disconnected", () => {
++        }); } catch (error) {
++            // A launch rejection may precede browser ownership. Classify without
++            // logging raw stderr, credentials or retrying an unowned process.
++            const message = String(error?.message ?? '');
++            const code = /ProcessSingleton|SingletonLock|profile.*(?:in use|already)|already running.*userDataDir/i.test(message)
++                ? 'browser_profile_in_use' : /timed? ?out|timeout/i.test(message)
++                ? 'browser_launch_timeout' : 'browser_launch_failed';
++            traceOperation(this, 'browser-launch-failed', { code, phase: 'browser-launch', generation_submitted: false });
++            const failure = new BrowserPreparationError('The managed browser could not be launched. No generation was submitted and no automatic launch retry was made.', code, 'browser-launch', false);
++            failure.status = 502;
++            throw failure;
++        }
++        this.browser = browser;
++        browser.on("disconnected", () => {
+             log.warn("browser disconnected");
+-            this.browser = null;
++            // Transport loss does not prove the owned OS process has exited.
++            // Retain it for cleanup before any subsequent launch.
++            if (this.browser !== browser)
++                return;
++            traceOperation(this, 'browser-disconnected', { generationBlocked: this.generationBlocked });
+             this.page = null;
+             this.cdp = null;
+             this.fetchInit = null;
+             this.mintResolve = null;
+         });
+-        const page = (await this.browser.pages())[0] ?? (await this.browser.newPage());
+-        await page.evaluateOnNewDocument(installSentinelHook, SENTINEL_GLOBAL);
+-        await page.goto(`${CHATGPT_ORIGIN}/`, { waitUntil: "domcontentloaded", timeout: 60_000 });
+-        this.page = page;
+-        return page;
++        try {
++            const page = (await browser.pages())[0] ?? (await browser.newPage());
++            page.on?.('framenavigated', frame => {
++                if (frame !== page.mainFrame()) return;
++                this.navigationVersion++;
++                let pathKind = 'other';
++                try { const path = new URL(frame.url()).pathname; pathKind = path === '/' || /^\/u\/\d+\/?$/.test(path) ? 'home' : path.includes('/c/') ? 'conversation' : 'other'; } catch {}
++                traceOperation(this, 'navigation', { pathKind });
++            });
++            await page.evaluateOnNewDocument(installSentinelHook, SENTINEL_GLOBAL);
++            await page.goto(`${CHATGPT_ORIGIN}/`, { waitUntil: "domcontentloaded", timeout: 60_000 });
++            if (this.browser !== browser || !browser.connected || page.isClosed())
++                throw new Error("Managed browser disconnected during startup.");
++            this.page = page;
++            return page;
++        }
++        catch (error) {
++            log.warn("browser startup failed; releasing owned browser", { message: String(error?.message ?? error) });
++            try {
++                await this.releaseBrowser(browser);
++            }
++            catch (cleanupError) {
++                throw new Error(`${String(error?.message ?? error)}; managed browser cleanup failed: ${String(cleanupError?.message ?? cleanupError)}`, { cause: error });
++            }
++            throw error;
++        }
++    }
++    resetBrowser(browser) {
++        // A delayed disconnect from an older instance must not erase a new one.
++        if (this.browser !== browser)
++            return;
++        this.browser = null;
++        this.page = null;
++        this.cdp = null;
++        this.fetchInit = null;
++        this.mintResolve = null;
++    }
++    async releaseBrowser(browser) {
++        if (!browser)
++            return;
++        const child = browser.process?.();
++        const closeStarted = performance.now();
++        try {
++            await withDeadline(browser.close(), this.closeTimeoutMs, "Managed browser close timed out.");
++            // A fulfilled close callback is not proof that the OS profile owner
++            // has exited (in particular after an earlier close/disconnect race).
++            if (child) await waitForOwnedChildExit(child,
++                Math.max(1, Math.min(this.closeTimeoutMs, this.closeTimeoutMs - (performance.now() - closeStarted))));
++        }
++        catch (error) {
++            // Only the ChildProcess obtained from our own launch may be stopped.
++            // Keep ownership if exit cannot be confirmed; never reuse its profile.
++            if (!child)
++                throw error;
++            if (child.exitCode === null && child.signalCode === null) {
++                log.warn("browser close failed; terminating owned process", { pid: child.pid });
++                await waitForOwnedChildExit(child, this.closeTimeoutMs, true);
++            }
++        }
++        this.resetBrowser(browser);
+     }
+     /** Launch a visible window for interactive login. */
+     async openForLogin() {
+         return this.ensureRunning();
+     }
+     /** Read /api/auth/session inside the page (uses the live cookies). */
+-    async fetchSession() {
++    async fetchSession(signal) {
++        signal?.throwIfAborted();
+         const page = await this.ensureRunning();
+-        const result = (await page.evaluate(async (route) => {
++        signal?.throwIfAborted();
++        const requestId = randomUUID();
++        const abort = () => { page.evaluate(id => globalThis.__dshAuthAbortControllers?.get(id)?.abort(), requestId).catch(() => {}); };
++        signal?.addEventListener('abort', abort, { once: true });
++        const guardedPage = { evaluate: (...args) => { signal?.throwIfAborted(); return page.evaluate(...args); } };
++        let result;
++        try { result = await evaluateWithRetry(guardedPage, async (route, id) => {
++            const controllers = globalThis.__dshAuthAbortControllers ??= new Map();
++            const controller = new AbortController();
++            controllers.set(id, controller);
++            const timer = setTimeout(() => controller.abort(), 30_000);
+             try {
+                 const res = await fetch(route, {
+                     headers: { accept: "application/json" },
+                     credentials: "include",
++                    signal: controller.signal,
+                 });
+                 if (!res.ok)
+                     return { ok: false, status: res.status, body: null };
+@@ -97,7 +302,10 @@
+             catch (e) {
+                 return { ok: false, status: 0, body: null, error: String(e) };
+             }
+-        }, ROUTES.authSession));
++            finally { clearTimeout(timer); controllers.delete(id); }
++        }, ROUTES.authSession, requestId); }
++        finally { signal?.removeEventListener('abort', abort); }
++        signal?.throwIfAborted();
+         const body = result.body;
+         const accessToken = body?.accessToken ?? body?.access_token ?? body?.user?.accessToken ?? null;
+         return {
+@@ -112,7 +320,22 @@
+         const start = Date.now();
+         // eslint-disable-next-line no-constant-condition
+         while (true) {
+-            const session = await this.fetchSession();
++            // Local patch (not upstream): completing an OAuth sign-in navigates the
++            // page, which destroys the JS execution context mid-evaluate and makes
++            // page.evaluate throw "Execution context was destroyed". That is expected
++            // during login, not fatal — treat it as "no session yet" and keep polling.
++            let session;
++            try {
++                session = await this.fetchSession();
++            }
++            catch (err) {
++                const message = String(err?.message ?? err);
++                if (!/Execution context was destroyed|Target closed|Session closed|detached|Navigating frame/i.test(message)) {
++                    throw err;
++                }
++                log.info("login poll hit a navigation; retrying", { message });
++                session = { accessToken: null, email: undefined, expires: undefined, raw: null };
++            }
+             if (session.accessToken)
+                 return session;
+             const elapsed = Date.now() - start;
+@@ -139,7 +362,7 @@
+                 patterns: [{ urlPattern: "*://chatgpt.com/backend-api/f/conversation", requestStage: "Request" }],
+             });
+             cdp.on("Fetch.requestPaused", (ev) => {
+-                void this.onRequestPaused(cdp, ev);
++                void this.onRequestPaused(cdp, ev).catch(() => log.warn('browser interception failed; no automatic replay'));
+             });
+             this.cdp = cdp;
+         })().catch((err) => {
+@@ -151,18 +374,39 @@
+     async onRequestPaused(cdp, ev) {
+         const { requestId } = ev;
+         const path = String(ev.request?.url || "").split("?")[0] ?? "";
+-        if (this.mintResolve && path.endsWith("/f/conversation")) {
+-            const resolve = this.mintResolve;
+-            this.mintResolve = null;
+-            const headers = lowerKeys(ev.request.headers || {});
+-            // Abort before it reaches the server: no turn consumed, no history entry.
++        let probe;
++        try { probe = JSON.parse(ev.request?.postData ?? '{}').messages?.[0]?.content?.parts?.[0]; } catch {}
++        const ownedProbe = typeof probe === 'string' && (probe === this.mintMarker || this.retiredMintMarkers.has(probe)
++            || this.pendingComposerSubmissions.has(probe));
++        if (path.endsWith('/f/conversation') && ownedProbe) {
++            // Ownership outlives the capture callback, cancellation and click.
++            // Never pass an owned probe through merely because its waiter ended.
++            let transaction = this.pendingComposerSubmissions.get(probe);
++            if (!transaction) {
++                // A duplicate of a previously cancelled probe is a distinct
++                // request. Fence it until this exact cancellation is confirmed.
++                transaction = { marker: probe, clickSettled: true, requests: new Map() };
++                this.pendingComposerSubmissions.set(probe, transaction);
++            }
++            const resolve = probe === this.mintMarker ? this.mintResolve : null;
++            const reject = probe === this.mintMarker ? this.mintReject : null;
++            if (resolve) this.mintResolve = null;
+             try {
+-                await cdp.send("Fetch.failRequest", { requestId, errorReason: "Aborted" });
+-            }
+-            catch {
+-                /* ignore */
+-            }
+-            resolve(headers);
++                await this.cancelComposerRequest(transaction, cdp, requestId);
++            } catch (error) {
++                if (!resolve) throw error;
++                reject?.(new BrowserPreparationError('The browser send could not be confirmed cancelled. Submission is uncertain; no automatic replay is permitted.', 'browser_submission_uncertain', 'submit', 'unknown'));
++                return;
++            }
++            if (resolve) {
++                resolve(lowerKeys(ev.request.headers || {}));
++            }
++            return;
++        }
++        // Recheck at the request-stage boundary as well: a late UI request may
++        // become uncertain after ChatClient's last synchronous pre-submit check.
++        if (path.endsWith('/f/conversation') && this.pendingComposerSubmission) {
++            await cdp.send('Fetch.failRequest', { requestId, errorReason: 'Aborted' });
+             return;
+         }
+         // Not a mint trigger (e.g. our own real request): let it through unchanged.
+@@ -184,59 +428,162 @@
+      *
+      * No caching: requirements tokens are single-use, so every turn mints fresh.
+      */
+-    async mintSentinelHeaders() {
++    async mintSentinelHeaders(options = {}) {
++        return withBrowserOperation(this, 'composer', options.requestId, () => this.mintExclusive(options));
++    }
++    async mintExclusive(options) {
+         if (this.minting)
+             return this.minting;
+-        this.minting = this.doMint().finally(() => {
++        this.minting = this.doMint(options).finally(() => {
+             this.minting = null;
+         });
+         return this.minting;
+     }
+-    async doMint() {
+-        await this.ensureFetchInterception();
+-        const page = await this.ensureRunning();
+-        await this.ensureComposer(page);
+-        let timer;
+-        const captured = new Promise((resolve) => {
+-            this.mintResolve = (headers) => {
+-                if (timer)
+-                    clearTimeout(timer);
+-                resolve(headers);
+-            };
+-        });
++    async doMint(options = {}) {
++        this.assertNoPendingComposerSubmission();
++        const marker = `dsh_transport_probe_${randomUUID()}`;
++        this.mintMarker = marker;
++        let timer, page, abortCapture;
+         try {
+-            await page.click("#prompt-textarea").catch(() => { });
+-            await page.keyboard.type("ping", { delay: 8 });
+-            await page.keyboard.press("Enter");
+-            const raw = await new Promise((resolve, reject) => {
++            operationPhase(this, 'prepare', false);
++            const ready = await this.prepareMintComposer(marker, options.signal);
++            page = ready.page;
++            const prepared = ready.prepared;
++            await this.ensureFetchInterception();
++            traceOperation(this, 'composer-ready', { selector: prepared.selector });
++            if (options.signal?.aborted) throw new BrowserPreparationError('Request cancelled before sending.', 'browser_cancelled');
++            const captured = new Promise((resolve, reject) => {
++                this.mintResolve = resolve;
++                this.mintReject = reject;
++                abortCapture = () => {
++                    this.mintResolve = null;
++                    reject(new BrowserPreparationError('Request cancelled during browser submission. No generation replay was made.', 'browser_cancelled', 'ui-submit', 'unknown'));
++                };
++                options.signal?.addEventListener('abort', abortCapture, { once: true });
+                 timer = setTimeout(() => {
+                     this.mintResolve = null;
+-                    reject(new Error("sentinel mint timed out (composer send not observed)"));
+-                }, 30_000);
+-                captured.then(resolve, reject);
++                    reject(new BrowserPreparationError(
++                        "The browser send was not observed after one submission. Submission is uncertain; inspect the managed page before resuming. No automatic replay was made.",
++                        "browser_submission_uncertain", "submit", "unknown"));
++                }, this.captureTimeoutMs);
+             });
+-            return { headers: filterSentinelHeaders(raw), capturedAt: Date.now() };
+-        }
+-        finally {
+-            if (timer)
+-                clearTimeout(timer);
++            // Attach the rejection observer immediately; an unsuccessful UI action can finish first.
++            captured.catch(() => {});
++            // Record the exact UI submission before clicking. It survives operation
++            // release, tab closure and disconnect until this marker is proved not
++            // sent or its intercepted request is confirmed cancelled.
++            const transaction = { marker, page, clickSettled: false, clickNotAttempted: false, requests: new Map() };
++            this.pendingComposerSubmissions.set(marker, transaction);
++            operationPhase(this, 'ui-submit', 'unknown');
++            try { await submitComposerOnce(page, prepared); }
++            catch (error) {
++                if (error.generationSubmitted === false) {
++                    transaction.clickNotAttempted = true;
++                    operationPhase(this, 'prepare', false);
++                }
++                throw error;
++            } finally {
++                transaction.clickSettled = true;
++                this.reconcileComposerSubmission(transaction);
++            }
++            const raw = await captured;
++            this.assertNoPendingComposerSubmission();
++            operationPhase(this, 'probe-cancelled', false);
++            return { headers: filterSentinelHeaders(raw), capturedAt: Date.now(), page };
++        } finally {
++            clearTimeout(timer);
++            if (abortCapture) options.signal?.removeEventListener('abort', abortCapture);
+             this.mintResolve = null;
+-            await this.clearComposer(page).catch(() => { });
+-        }
+-    }
+-    async ensureComposer(page) {
+-        if (!/^https:\/\/chatgpt\.com\/?($|\?)/.test(page.url())) {
+-            await page
+-                .goto(`${CHATGPT_ORIGIN}/`, { waitUntil: "domcontentloaded", timeout: 60_000 })
+-                .catch(() => { });
+-        }
+-        await page.waitForSelector("#prompt-textarea", { timeout: 30_000 });
++            this.mintReject = null;
++            this.mintMarker = null;
++            // Keep ownership for this supervisor lifetime: evicting a completed
++            // marker would allow a very late duplicate to become a generation.
++            this.retiredMintMarkers.add(marker);
++            const cleanupPage = page ?? this.page;
++            if (cleanupPage) await clearOwnedComposer(cleanupPage, marker).catch(() => {});
++        }
++    }
++    async prepareMintComposer(marker, signal) {
++        for (let attempt = 0; attempt < 2; attempt++) {
++            let lastStateKey;
++            const page = await this.ensureRunning();
++            try {
++                await this.ensureComposer(page, marker);
++                const prepared = await prepareComposer(page, { marker, signal, timeoutMs: this.preparationTimeoutMs,
++                    onState: state => {
++                        // Booleans/lengths only: never record composer text or identity material.
++                        const safe = { ready: !!state.ready, pending: !!state.pending, focused: !!state.focused, sendReady: !!state.sendReady, hasForm: !!state.hasForm, textLength: state.textLength ?? 0, ownText: !!state.ownsText, gate: !!state.gate, loginRequired: !!state.loginRequired, contextLost: !!state.contextLost };
++                        const key = JSON.stringify(safe); if (key !== lastStateKey) { lastStateKey = key; traceOperation(this, 'composer-state', { attempt, ...safe }); }
++                    } });
++                return { page, prepared };
++            } catch (error) {
++                if (attempt || signal?.aborted || !(error.code === 'browser_not_ready' || transientContextError(error))) throw error;
++                // A single normal-page recovery is allowed only before any send and after
++                // observing no foreign draft or access gate. If observation fails, stop.
++                let state;
++                for (let read = 0; read < 4; read++) {
++                    try { state = await composerState(page, marker); break; }
++                    catch (readError) { if (!transientContextError(readError) || read === 3) break; await delay(250); }
++                }
++                if (!state) throw new BrowserPreparationError('The browser context is unavailable before sending; no automatic navigation or generation was attempted.', 'browser_context_unavailable');
++                if (state.gate || (state.textLength && !state.ownsText)) throw error;
++                await clearOwnedComposer(page, marker);
++                traceOperation(this, 'pre-send-recovery', { attempt: attempt + 1 });
++                try { await page.goto(`${CHATGPT_ORIGIN}/`, { waitUntil: 'domcontentloaded', timeout: 30000 }); }
++                catch { throw new BrowserPreparationError('The managed page did not recover before sending.', 'browser_navigation_failed'); }
++            }
++        }
++    }
++    async ensureComposer(page, marker = '') {
++        const path = new URL(page.url()).pathname;
++        if (!(path === '/' || /^\/u\/\d+\/?$/.test(path))) {
++            const state = await composerState(page, marker);
++            if (state.loginRequired) throw new BrowserPreparationError('The managed page shows a login prompt. Sign in manually, then resume.', 'browser_login_required');
++            if (state.gate) throw new BrowserPreparationError('The managed page requires user attention.', 'browser_user_action_required');
++            if (state.textLength && !state.ownsText) throw new BrowserPreparationError('The managed composer contains a draft. No navigation was attempted.', 'browser_draft_present');
++            traceOperation(this, 'navigation-start', { reason: 'new-turn' });
++            try { await page.goto(`${CHATGPT_ORIGIN}/`, { waitUntil: "domcontentloaded", timeout: 30000 }); }
++            catch { throw new BrowserPreparationError('The managed ChatGPT page could not load before sending. Check its network/page state and resume.', 'browser_navigation_failed'); }
++        }
++        // prepareComposer waits for the hydrated editor and detects access/login gates.
++    }
++    async waitForStableContext(page, signal, { timeoutMs = 10000, wait = delay, now = Date.now } = {}) {
++        const deadline = now() + timeoutMs;
++        let previous = -1, stable = 0;
++        operationPhase(this, 'prepare', false);
++        while (now() < deadline) {
++            if (signal?.aborted) throw new BrowserPreparationError('Request cancelled before generation.', 'browser_cancelled');
++            const version = this.navigationVersion;
++            try {
++                const loaded = await page.evaluate(() => document.readyState === 'complete');
++                stable = loaded && version === this.navigationVersion && version === previous ? stable + 1 : 0;
++                previous = this.navigationVersion;
++                if (stable >= 2) { traceOperation(this, 'context-stable'); return; }
++            } catch (error) { if (!transientContextError(error)) throw error; stable = 0; previous = -1; }
++            await wait(250);
++        }
++        throw new BrowserPreparationError('The page did not settle before generation. No generation POST was attempted.', 'browser_context_unavailable');
++    }
++    /** Local patch: resolve the composer element that is actually present. */
++    async resolveComposer(page) {
++        for (const selector of COMPOSER_SELECTORS) {
++            const el = await page.$(selector);
++            if (el) {
++                const box = await el.boundingBox().catch(() => null);
++                if (box && box.width > 0 && box.height > 0)
++                    return selector;
++            }
++        }
++        return null;
+     }
+     async clearComposer(page) {
+-        await page.click("#prompt-textarea").catch(() => { });
+-        await page.keyboard.down("Meta");
++        const selector = (await this.resolveComposer(page)) ?? COMPOSER_SELECTORS[0];
++        await page.focus(selector);
++        // Local patch: select-all is Ctrl on Windows/Linux, Meta on macOS.
++        const modifier = process.platform === "darwin" ? "Meta" : "Control";
++        await page.keyboard.down(modifier);
+         await page.keyboard.press("A");
+-        await page.keyboard.up("Meta");
++        await page.keyboard.up(modifier);
+         await page.keyboard.press("Backspace");
+     }
+     /** Read the latest captured sentinel/bearer/conduit state without minting. */
+@@ -252,13 +599,16 @@
+         try {
+             const page = await this.ensureRunning();
+             return (await page.evaluate(async (route) => {
++                const controller = new AbortController();
++                const timer = setTimeout(() => controller.abort(), 5000);
+                 try {
+-                    const res = await fetch(route, { method: "POST", credentials: "include" });
++                    const res = await fetch(route, { method: "POST", credentials: "include", signal: controller.signal });
+                     return res.ok;
+                 }
+                 catch {
+                     return false;
+                 }
++                finally { clearTimeout(timer); }
+             }, ROUTES.sentinelPing));
+         }
+         catch {
+@@ -270,18 +620,43 @@
+         return this.ensureRunning();
+     }
+     async close() {
+-        try {
+-            await this.browser?.close();
+-        }
+-        catch {
+-            /* ignore */
+-        }
+-        this.browser = null;
+-        this.page = null;
+-        this.cdp = null;
+-        this.fetchInit = null;
+-        this.mintResolve = null;
+-    }
++        // Do not let an in-flight launch survive service shutdown.
++        this.closing = true;
++        await this.booting?.catch(() => {});
++        await this.releaseBrowser(this.browser);
++    }
++}
++async function waitForOwnedChildExit(child, timeoutMs, terminate = false) {
++    if (child.exitCode !== null || child.signalCode !== null) return;
++    await new Promise((resolve, reject) => {
++        let settled = false;
++        const finish = error => {
++            if (settled) return;
++            settled = true;
++            clearTimeout(timer);
++            child.off('exit', onExit);
++            child.off('error', onError);
++            error ? reject(error) : resolve();
++        };
++        const onExit = () => finish();
++        const onError = error => finish(error);
++        const timer = setTimeout(() => finish(new Error('Owned browser process did not exit; restart the dedicated service.')), timeoutMs);
++        child.once('exit', onExit);
++        child.once('error', onError);
++        if (child.exitCode !== null || child.signalCode !== null) return finish();
++        if (terminate) try {
++            if (!child.kill('SIGKILL')) finish(new Error('Could not terminate the owned browser process.'));
++        } catch (error) { finish(error); }
++    });
++}
++async function withDeadline(promise, timeoutMs, message) {
++    let timer;
++    try {
++        return await Promise.race([promise, new Promise((_, reject) => {
++            timer = setTimeout(() => reject(new Error(message)), timeoutMs);
++        })]);
++    }
++    finally { clearTimeout(timer); }
+ }
+ function lowerKeys(headers) {
+     const out = {};
+@@ -313,4 +688,4 @@
+ function delay(ms) {
+     return new Promise((resolve) => setTimeout(resolve, ms));
+ }
+-//# sourceMappingURL=supervisor.js.map
+\ No newline at end of file
++//# sourceMappingURL=supervisor.js.map
+diff --git a/dist/chat/conversation.js b/dist/chat/conversation.js
+--- a/dist/chat/conversation.js
++++ b/dist/chat/conversation.js
+@@ -1,292 +1,562 @@
+-import { randomUUID } from "node:crypto";
+-import { CHATGPT_ORIGIN, ROUTES, WEB_MODEL_ID } from "../constants.js";
+-import { createLogger } from "../log.js";
+-import { reassembleAll } from "./sse-reassembler.js";
+-const log = createLogger("chat");
+-const POLL_INTERVAL_MS = 4000;
+-const POLL_TIMEOUT_MS = 20 * 60_000; // Pro turns can run many minutes.
+-export class ChatClient {
+-    chrome;
+-    constructor(chrome) {
+-        this.chrome = chrome;
+-    }
+-    async run(turn, bearer) {
+-        throwIfAborted(turn.signal);
+-        const model = turn.model || WEB_MODEL_ID;
+-        const effort = turn.effort || "standard";
+-        const page = await this.chrome.pageContext();
+-        throwIfAborted(turn.signal);
+-        const userMessageId = randomUUID();
+-        const promptText = turn.system ? `${turn.system}\n\n${turn.prompt}` : turn.prompt;
+-        // Best-effort prepare (warms the route; we ignore its result).
+-        await this.prepare(page, model, effort, promptText, bearer).catch(() => { });
+-        const body = {
+-            action: "next",
+-            messages: [
+-                {
+-                    id: userMessageId,
+-                    author: { role: "user" },
+-                    create_time: Date.now() / 1000,
+-                    content: { content_type: "text", parts: [promptText] },
+-                    metadata: {
+-                        selected_sources: [],
+-                        selected_github_repos: [],
+-                        selected_all_github_repos: false,
+-                        serialization_metadata: { custom_symbol_offsets: [] },
+-                    },
+-                },
+-            ],
+-            parent_message_id: "client-created-root",
+-            model,
+-            timezone_offset_min: new Date().getTimezoneOffset(),
+-            timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
+-            conversation_mode: { kind: "primary_assistant" },
+-            enable_message_followups: true,
+-            system_hints: [],
+-            supports_buffering: true,
+-            supported_encodings: ["v1"],
+-            client_contextual_info: { is_dark_mode: true, app_name: "chatgpt.com" },
+-            paragen_cot_summary_display_override: "allow",
+-            force_parallel_switch: "auto",
+-            thinking_effort: effort,
+-        };
+-        throwIfAborted(turn.signal);
+-        const sse = await this.sendWithSentinel(page, body, bearer, turn.signal);
+-        const controls = [];
+-        const reassembled = reassembleAll(sse, {
+-            onTextDelta: turn.onTextDelta,
+-            onReasoningDelta: turn.onReasoningDelta,
+-            onControl: (f) => controls.push(f),
+-        });
+-        let { text, reasoning } = reassembled;
+-        const conversationId = reassembled.conversationId;
+-        let viaPoll = false;
+-        if (reassembled.handoff || (!text && conversationId)) {
+-            // Pro path: answer streams on a separate topic. Poll the conversation to
+-            // completion and read the final assistant message.
+-            viaPoll = true;
+-            const polled = await this.pollToCompletion(page, conversationId, bearer, turn);
+-            if (polled.text)
+-                text = polled.text;
+-            if (polled.reasoning && !reasoning)
+-                reasoning = polled.reasoning;
+-            if (text)
+-                turn.onTextDelta?.(text, text);
+-        }
+-        return { text, reasoning, conversationId, model, viaPoll };
+-    }
+-    /**
+-     * Mint a fresh sentinel header set (via the page's own SDK), attach our
+-     * per-request headers, and POST /f/conversation. On a 403/401 (stale or
+-     * anti-bot-rejected sentinel) re-mint once and retry.
+-     */
+-    async sendWithSentinel(page, body, bearer, signal) {
+-        let attempt = 0;
+-        // eslint-disable-next-line no-constant-condition
+-        while (true) {
+-            throwIfAborted(signal);
+-            const sentinel = await this.chrome.mintSentinelHeaders();
+-            const headers = {
+-                ...sentinel.headers,
+-                "content-type": "application/json",
+-                accept: "text/event-stream",
+-                authorization: `Bearer ${bearer}`,
+-                "x-oai-turn-trace-id": randomUUID(),
+-            };
+-            try {
+-                return await this.postConversationInPage(page, body, headers);
+-            }
+-            catch (e) {
+-                if (e instanceof ChatError && (e.status === 403 || e.status === 401) && attempt === 0) {
+-                    attempt += 1;
+-                    log.warn("conversation rejected; re-minting sentinel and retrying", { status: e.status });
+-                    continue;
+-                }
+-                throw e;
+-            }
+-        }
+-    }
+-    async prepare(page, model, effort, firstChar, bearer) {
+-        const body = {
+-            action: "next",
+-            parent_message_id: "client-created-root",
+-            model,
+-            client_prepare_state: "none",
+-            timezone_offset_min: new Date().getTimezoneOffset(),
+-            timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
+-            conversation_mode: { kind: "primary_assistant" },
+-            system_hints: [],
+-            partial_query: {
+-                id: randomUUID(),
+-                author: { role: "user" },
+-                content: { content_type: "text", parts: [firstChar.slice(0, 1)] },
+-            },
+-            supports_buffering: true,
+-            supported_encodings: ["v1"],
+-            client_contextual_info: { app_name: "chatgpt.com" },
+-            thinking_effort: effort,
+-        };
+-        await page.evaluate(async (route, b, token) => {
+-            await fetch(route, {
+-                method: "POST",
+-                credentials: "include",
+-                headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+-                body: JSON.stringify(b),
+-            }).catch(() => { });
+-        }, ROUTES.conversationPrepare, body, bearer);
+-    }
+-    /** POST /f/conversation inside the page; buffer the full SSE body. */
+-    async postConversationInPage(page, body, headers) {
+-        const res = (await page.evaluate(async (route, b, h) => {
+-            try {
+-                const resp = await fetch(route, {
+-                    method: "POST",
+-                    credentials: "include",
+-                    headers: h,
+-                    body: JSON.stringify(b),
+-                });
+-                if (!resp.ok) {
+-                    const errText = await resp.text().catch(() => "");
+-                    return { ok: false, status: resp.status, text: errText };
+-                }
+-                const text = await resp.text();
+-                return { ok: true, status: resp.status, text };
+-            }
+-            catch (e) {
+-                return { ok: false, status: 0, text: String(e) };
+-            }
+-        }, ROUTES.conversation, body, headers));
+-        if (!res.ok) {
+-            throw new ChatError(res.status, res.text);
+-        }
+-        return res.text;
+-    }
+-    /**
+-     * Poll stream_status until the turn finishes, then fetch the conversation
+-     * detail and extract the final assistant message + reasoning. Guaranteed-
+-     * correct floor for Pro turns regardless of streaming transport.
+-     */
+-    async pollToCompletion(page, conversationId, bearer, turn) {
+-        const deadline = Date.now() + POLL_TIMEOUT_MS;
+-        let lastText = "";
+-        let lastReasoning = "";
+-        while (Date.now() < deadline) {
+-            throwIfAborted(turn.signal);
+-            const detail = await this.fetchConversationDetail(page, conversationId, bearer);
+-            if (detail) {
+-                const extracted = extractFinal(detail);
+-                if (extracted.text)
+-                    lastText = extracted.text;
+-                if (extracted.reasoning)
+-                    lastReasoning = extracted.reasoning;
+-                if (extracted.finished && lastText) {
+-                    return { text: lastText, reasoning: lastReasoning };
+-                }
+-            }
+-            turn.onHeartbeat?.();
+-            await delay(POLL_INTERVAL_MS, turn.signal);
+-        }
+-        log.warn("poll timed out", { conversationId });
+-        return { text: lastText, reasoning: lastReasoning };
+-    }
+-    async fetchConversationDetail(page, conversationId, bearer) {
+-        return page.evaluate(async (origin, convId, token) => {
+-            try {
+-                const resp = await fetch(`${origin}/backend-api/conversation/${convId}`, {
+-                    credentials: "include",
+-                    headers: { accept: "application/json", authorization: `Bearer ${token}` },
+-                });
+-                if (!resp.ok)
+-                    return null;
+-                return await resp.json();
+-            }
+-            catch {
+-                return null;
+-            }
+-        }, CHATGPT_ORIGIN, conversationId, bearer);
+-    }
+-}
+-export class ChatError extends Error {
+-    status;
+-    body;
+-    constructor(status, body) {
+-        super(`chat request failed (HTTP ${status}): ${body.slice(0, 300)}`);
+-        this.status = status;
+-        this.body = body;
+-        this.name = "ChatError";
+-    }
+-}
+-/**
+- * Extract the final assistant answer + reasoning from a /conversation detail
+- * mapping. Picks the most recent finished assistant message and the most recent
+- * reasoning (tool) message.
+- */
+-function extractFinal(detail) {
+-    const mapping = detail?.mapping;
+-    if (!mapping || typeof mapping !== "object") {
+-        return { text: "", reasoning: "", finished: false };
+-    }
+-    let bestAnswer = "";
+-    let bestAnswerTime = -1;
+-    let bestAnswerFinished = false;
+-    let bestReasoning = "";
+-    let bestReasoningTime = -1;
+-    for (const key of Object.keys(mapping)) {
+-        const msg = mapping[key]?.message;
+-        if (!msg)
+-            continue;
+-        const role = msg.author?.role;
+-        const meta = msg.metadata ?? {};
+-        const time = msg.create_time ?? msg.update_time ?? 0;
+-        const isReasoning = role === "tool" || msg.content?.content_type === "thoughts" || meta.initial_text === "Reasoning";
+-        const parts = joinParts(msg.content);
+-        if (isReasoning) {
+-            if (time >= bestReasoningTime && parts) {
+-                bestReasoning = parts;
+-                bestReasoningTime = time;
+-            }
+-            continue;
+-        }
+-        if (role === "assistant" && !meta.is_visually_hidden_from_conversation) {
+-            if (time >= bestAnswerTime) {
+-                bestAnswer = parts;
+-                bestAnswerTime = time;
+-                bestAnswerFinished = msg.status === "finished_successfully" && msg.end_turn !== false;
+-            }
+-        }
+-    }
+-    return { text: bestAnswer, reasoning: bestReasoning, finished: bestAnswerFinished };
+-}
+-function joinParts(content) {
+-    if (!content)
+-        return "";
+-    const parts = content.parts;
+-    if (Array.isArray(parts)) {
+-        return parts
+-            .map((p) => (typeof p === "string" ? p : p?.text ?? p?.content ?? p?.summary ?? ""))
+-            .join("");
+-    }
+-    if (typeof content.text === "string")
+-        return content.text;
+-    return "";
+-}
+-function throwIfAborted(signal) {
+-    if (signal?.aborted)
+-        throw new Error("aborted");
+-}
+-function delay(ms, signal) {
+-    if (!signal)
+-        return new Promise((resolve) => setTimeout(resolve, ms));
+-    return new Promise((resolve, reject) => {
+-        const timer = setTimeout(() => {
+-            signal.removeEventListener("abort", onAbort);
+-            resolve();
+-        }, ms);
+-        const onAbort = () => {
+-            clearTimeout(timer);
+-            reject(new Error("aborted"));
+-        };
+-        signal.addEventListener("abort", onAbort, { once: true });
+-    });
+-}
+-//# sourceMappingURL=conversation.js.map
+\ No newline at end of file
++import { randomUUID } from "node:crypto";
++import { CHATGPT_ORIGIN, ROUTES, WEB_MODEL_ID } from "../constants.js";
++import { createLogger } from "../log.js";
++import { reassembleAll } from "./sse-reassembler.js";
++import { BrowserPreparationError } from '../browser/composer.js';
++import { withBrowserOperation, operationPhase, traceOperation } from '../browser/operations.js';
++import { startConversationTransaction, observeConversationTransaction, submissionFailureReason, SUBMISSION_REASONS } from './submission.js';
++const log = createLogger("chat");
++// Local patch: PCW_POLL_INTERVAL_MS tunes the poll cadence; it is read on every call so tests can
++// shorten it (default 4000 ms).
++const pollIntervalMs = () => (Number(process.env.PCW_POLL_INTERVAL_MS) > 0 ? Number(process.env.PCW_POLL_INTERVAL_MS) : 4000);
++const POLL_TIMEOUT_MS = 20 * 60_000; // Pro turns can run many minutes.
++/**
++ * Local patch (not upstream): ChatGPT re-renders its SPA while a turn is in flight,
++ * which destroys the JS execution context and makes page.evaluate reject with
++ * "Execution context was destroyed". That is a transient race, not a real failure —
++ * retrying the same evaluate succeeds once the new document is ready.
++ */
++const TRANSIENT_PAGE_ERROR = /Execution context was destroyed|Target closed|Session closed|Cannot find context|detached|Navigating frame|Node with given id does not belong to the document/i;
++async function evaluateWithRetry(page, fn, ...args) {
++    let lastErr;
++    for (let attempt = 1; attempt <= 5; attempt++) {
++        try {
++            return await page.evaluate(fn, ...args);
++        }
++        catch (err) {
++            lastErr = err;
++            const message = String(err?.message ?? err);
++            if (!TRANSIENT_PAGE_ERROR.test(message))
++                throw err;
++            log.info("transient page error; retrying evaluate", { attempt, message });
++            await new Promise((r) => setTimeout(r, 400 * attempt));
++        }
++    }
++    throw lastErr;
++}
++export class ChatClient {
++    chrome;
++    constructor(chrome, options = {}) {
++        this.chrome = chrome;
++        // Options are injected only by offline fixtures; production stays bounded.
++        this.submission = { now: Date.now, wait: ms => new Promise(r => setTimeout(r, ms)),
++            timeoutMs: 240_000, observationTimeoutMs: 5000, cleanupMs: 2000, pollMs: 250, ...options };
++    }
++    async run(turn, bearer) {
++        return withBrowserOperation(this.chrome, 'chat', turn.requestId, () => this.runExclusive(turn, bearer), { queue: true, signal: turn.signal });
++    }
++    async runExclusive(turn, bearer) {
++        throwIfAborted(turn.signal);
++        await this.assertNoPendingSubmission();
++        const model = turn.model || WEB_MODEL_ID;
++        const effort = turn.effort || "standard";
++        const page = await this.chrome.pageContext();
++        throwIfAborted(turn.signal);
++        const userMessageId = randomUUID();
++        const promptText = turn.system ? `${turn.system}\n\n${turn.prompt}` : turn.prompt;
++        // Best-effort prepare (warms the route; we ignore its result).
++        await this.prepare(page, model, effort, promptText, bearer).catch(() => { });
++        const body = {
++            action: "next",
++            messages: [
++                {
++                    id: userMessageId,
++                    author: { role: "user" },
++                    create_time: Date.now() / 1000,
++                    content: { content_type: "text", parts: [promptText] },
++                    metadata: {
++                        selected_sources: [],
++                        selected_github_repos: [],
++                        selected_all_github_repos: false,
++                        serialization_metadata: { custom_symbol_offsets: [] },
++                    },
++                },
++            ],
++            parent_message_id: "client-created-root",
++            model,
++            timezone_offset_min: new Date().getTimezoneOffset(),
++            timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
++            conversation_mode: { kind: "primary_assistant" },
++            enable_message_followups: true,
++            system_hints: [],
++            supports_buffering: true,
++            supported_encodings: ["v1"],
++            client_contextual_info: { is_dark_mode: true, app_name: "chatgpt.com" },
++            paragen_cot_summary_display_override: "allow",
++            force_parallel_switch: "auto",
++            thinking_effort: effort,
++        };
++        // Local patch: PCW_TEMPORARY_CHAT=1 sends the turn as a ChatGPT "temporary chat",
++        // so it is not saved to the account's conversation history.
++        if (process.env.PCW_TEMPORARY_CHAT === "1")
++            body.history_and_training_disabled = true;
++        throwIfAborted(turn.signal);
++        const sse = await this.sendWithSentinel(page, body, bearer, turn.signal);
++        throwIfAborted(turn.signal);
++        // Raw captures are disabled in this experimental distribution: streams can
++        // contain complete tasks, responses and account metadata. No directory is read/created.
++        if (process.env.PCW_CAPTURE_DIR) log.warn("raw-capture-disabled", {event:"raw-capture-disabled"});
++        const controls = [];
++        let reassembled;
++        try {
++            reassembled = reassembleAll(sse, {
++                // The upstream stream is already buffered. Publish only after
++                // completion checks so a partial tool envelope cannot escape.
++                onControl: (f) => controls.push(f),
++            });
++        } catch {
++            throw new BrowserPreparationError('The response stream contained an invalid delta. No generation replay was made.', 'browser_stream_invalid', 'response', true);
++        }
++        traceOperation(this.chrome, 'stream-evidence', { done: reassembled.done, parseErrors: reassembled.parseErrors,
++            selectedStatus: reassembled.selectedMessage?.status ?? null, selectedEndTurn: reassembled.selectedMessage?.endTurn ?? null,
++            selectedChannel: reassembled.selectedMessage?.channel ?? null, handoff: reassembled.handoff });
++        if (reassembled.parseErrors) throw new BrowserPreparationError('The response stream contained a malformed frame. No generation replay was made.', 'browser_stream_invalid', 'response', true);
++        let { text, reasoning } = reassembled;
++        const conversationId = reassembled.conversationId;
++        let viaPoll = false;
++        let observedModel = reassembled.selectedMessage?.model ?? null;
++        if (reassembled.handoff) {
++            // Pro path: answer streams on a separate topic. Poll the conversation to
++            // completion and read the final assistant message.
++            viaPoll = true;
++            if (!reassembled.done || !conversationId) throw new BrowserPreparationError('The handoff stream did not finish or identify its conversation.', 'browser_stream_incomplete', 'response', true);
++            const polled = await this.pollToCompletion(page, conversationId, bearer, { ...turn, userMessageId });
++            throwIfAborted(turn.signal);
++            observedModel = polled.observedModel ?? null;
++            if (polled.text)
++                text = polled.text;
++            if (polled.reasoning && !reasoning)
++                reasoning = polled.reasoning;
++        } else {
++            const selected = reassembled.selectedMessage;
++            if (!reassembled.done || selected?.status !== 'finished_successfully' || selected?.endTurn !== true)
++                throw new BrowserPreparationError('The response stream did not confirm a completed final answer. No generation replay was made.', 'browser_stream_incomplete', 'response', true);
++        }
++        if (!text) throw new BrowserPreparationError('The completed response did not contain a final answer.', 'browser_stream_incomplete', 'response', true);
++        if (turn.requireModelEvidence && !observedModel)
++            throw new BrowserPreparationError("The final answer has no observed model identity. No replay was made.", "browser_model_identity_unverified", "response", true);
++        if (turn.requireModelEvidence && observedModel !== model)
++            throw new BrowserPreparationError("The final answer model differs from the requested model. No replay was made.", "browser_model_identity_mismatch", "response", true);
++        turn.onTextDelta?.(text, text);
++        if (reasoning) turn.onReasoningDelta?.(reasoning, reasoning);
++        traceOperation(this.chrome, 'conversation-model', { requestedModel: model, observedModel, viaPoll, responseChars: text.length });
++        return { text, reasoning, conversationId, model: observedModel || reassembled.model || model, observedModel, viaPoll };
++    }
++    /**
++     * Mint a fresh sentinel header set (via the page's own SDK), attach our
++     * per-request headers, and POST /f/conversation once. Authentication and
++     * device rejection are returned to the caller without automatic replay.
++     */
++    async sendWithSentinel(page, body, bearer, signal) {
++        throwIfAborted(signal);
++        const sentinel = await this.chrome.mintSentinelHeaders({ signal });
++        throwIfAborted(signal);
++        await this.chrome.waitForStableContext?.(sentinel.page ?? page, signal);
++        throwIfAborted(signal);
++        const headers = {
++            ...sentinel.headers,
++            "content-type": "application/json",
++            accept: "text/event-stream",
++            authorization: `Bearer ${bearer}`,
++            "x-oai-turn-trace-id": randomUUID(),
++        };
++        const result = await this.postConversationInPage(sentinel.page ?? page, body, headers, signal);
++        throwIfAborted(signal);
++        return result;
++    }
++    async prepare(page, model, effort, firstChar, bearer) {
++        const body = {
++            action: "next",
++            parent_message_id: "client-created-root",
++            model,
++            client_prepare_state: "none",
++            timezone_offset_min: new Date().getTimezoneOffset(),
++            timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
++            conversation_mode: { kind: "primary_assistant" },
++            system_hints: [],
++            partial_query: {
++                id: randomUUID(),
++                author: { role: "user" },
++                content: { content_type: "text", parts: [firstChar.slice(0, 1)] },
++            },
++            supports_buffering: true,
++            supported_encodings: ["v1"],
++            client_contextual_info: { app_name: "chatgpt.com" },
++            thinking_effort: effort,
++        };
++        await evaluateWithRetry(page, async (route, b, token) => {
++            await fetch(route, {
++                method: "POST",
++                credentials: "include",
++                headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
++                body: JSON.stringify(b),
++            }).catch(() => { });
++        }, ROUTES.conversationPrepare, body, bearer);
++    }
++    // A lost CDP observation must not permit the next turn to navigate away from
++    // a still-running fetch. Only a positive settled observation clears this fence.
++    clearPendingSubmission(page, id) {
++        const pending = this.chrome.pendingGeneration;
++        if (pending?.page !== page || pending?.id !== id) return false;
++        this.chrome.pendingGeneration = null;
++        return true;
++    }
++    async assertNoPendingSubmission() {
++        const pending = this.chrome.pendingGeneration;
++        if (!pending) return;
++        let state;
++        try { state = await this.observeSubmission(pending.page, pending.id, 'peek'); }
++        catch { /* absence of observation is not proof of termination */ }
++        if (state?.state === 'settled' && this.clearPendingSubmission(pending.page, pending.id)) {
++            await this.observeSubmission(pending.page, pending.id, 'consume', undefined,
++                Math.min(this.submission.cleanupMs, this.submission.observationTimeoutMs)).catch(() => {});
++            traceOperation(this.chrome, 'previous-submission-settled');
++            return;
++        }
++        throw new BrowserPreparationError('A previous browser request has not confirmed termination. No new generation or navigation was attempted. Inspect the managed browser before resuming.',
++            'browser_generation_pending', 'prepare', false);
++    }
++    async observeSubmission(page, id, action = 'read', reason, timeoutMs = this.submission.observationTimeoutMs, signal) {
++        throwIfAborted(signal);
++        const observedAt = this.submission.now();
++        try {
++            return await boundedObservation(page.evaluate(observeConversationTransaction, id, action, reason), timeoutMs, signal);
++        } catch (error) {
++            if (error && typeof error === 'object') {
++                error.observationAction = action;
++                error.observationBudgetMs = timeoutMs;
++                error.observationElapsedMs = Math.max(0, this.submission.now() - observedAt);
++            }
++            throw error;
++        }
++    }
++    async readSubmissionWithRecovery(page, id, action, deadline, signal, recovery) {
++        let recovering = false;
++        while (true) {
++            throwIfAborted(signal);
++            const remaining = deadline - this.submission.now();
++            if (remaining <= 0) throw Object.assign(new Error('Generation deadline.'), { reason: 'generation_deadline' });
++            try {
++                const state = await this.observeSubmission(page, id, action, undefined,
++                    Math.min(this.submission.observationTimeoutMs, remaining), signal);
++                if (recovering) traceOperation(this.chrome, 'observation-recovered',
++                    { observationAction: action, observationRecoveryCount: recovery.count });
++                return state;
++            } catch (error) {
++                if (signal?.aborted) throw error;
++                if (this.submission.now() >= deadline) {
++                    error.reason = 'generation_deadline';
++                    throw error;
++                }
++                // One additional READ for the same transaction per generation.
++                // No start/abort/consume retry, no context repair, no POST replay.
++                if (submissionFailureReason(error) !== 'observation_timeout' || recovery.count >= 1) throw error;
++                recovery.count++;
++                recovering = true;
++                traceOperation(this.chrome, 'observation-recovery', { observationAction: action,
++                    observationRecoveryCount: recovery.count,
++                    observationBudgetMs: Math.min(this.submission.observationTimeoutMs, deadline - this.submission.now()) });
++            }
++        }
++    }
++    async stopSubmission(page, id, reason) {
++        return (await this.stopSubmissionEvidence(page, id, reason)).terminationConfirmed;
++    }
++    async stopSubmissionEvidence(page, id, reason) {
++        const cleanupStarted = this.submission.now();
++        const deadline = cleanupStarted + this.submission.cleanupMs;
++        const slice = Math.max(1, Math.min(this.submission.observationTimeoutMs, this.submission.cleanupMs / 2));
++        let state, action = 'abort', lastAction = 'abort', budget, lastFailure, abortAcknowledged = false, abortAttempts = 0, reads = 0, attempts = 0;
++        const elapsed = () => Math.max(0, this.submission.now() - cleanupStarted);
++        while (this.submission.now() < deadline && attempts < 12) {
++            budget = Math.min(slice, deadline - this.submission.now());
++            lastAction = action;
++            attempts++;
++            try {
++                if (action === 'abort') abortAttempts++; else reads++;
++                state = await this.observeSubmission(page, id, action, reason, budget);
++                if (action === 'abort' && state?.state === 'pending') abortAcknowledged = true;
++                if (state?.state === 'settled') {
++                    if (!this.clearPendingSubmission(page, id)) {
++                        return { terminationConfirmed: false, cleanupOutcome: 'transaction_invalid', cleanupAction: action,
++                            cleanupObservationBudgetMs: budget, cleanupReadAttempts: reads, cleanupElapsedMs: elapsed() };
++                    }
++                    // The metadata acknowledgement is sufficient proof of local
++                    // fetch termination. Do not copy the body during cancellation.
++                    return { terminationConfirmed: true, cleanupOutcome: 'settled', cleanupAction: action,
++                        cleanupObservationBudgetMs: budget, cleanupReadAttempts: reads, cleanupElapsedMs: elapsed() };
++                }
++                lastFailure = null;
++            } catch (error) {
++                // A lost reply is not a failed abort. Use the RESERVED remaining
++                // cleanup time for a new metadata observation; never assume stop.
++                lastFailure = submissionFailureReason(error);
++            }
++            if (this.submission.now() >= deadline) break;
++            if (lastFailure && lastFailure !== 'observation_timeout' && action === 'peek') break;
++            if (state?.state === 'pending' && !abortAcknowledged && abortAttempts < 2) action = 'abort';
++            else action = 'peek';
++            // Probe immediately after abort or a lost acknowledgement. Poll delay
++            // applies only after an actual metadata read, preserving cleanup time.
++            if (lastAction !== 'abort' && lastFailure !== 'observation_timeout')
++                await this.submission.wait(Math.min(this.submission.pollMs, deadline - this.submission.now()));
++        }
++        return { terminationConfirmed: false,
++            cleanupOutcome: lastFailure ?? (state?.state === 'pending' ? 'pending' : state?.state === 'missing' ? 'missing' : 'transaction_invalid'),
++            cleanupAction: lastAction, cleanupObservationBudgetMs: budget, cleanupReadAttempts: reads, cleanupElapsedMs: elapsed() };
++    }
++    /** Start POST once, observe metadata, then transfer the settled body once. */
++    async postConversationInPage(page, body, headers, signal) {
++        throwIfAborted(signal);
++        await this.assertNoPendingSubmission();
++        // A retired UI probe can become uncertain during sentinel/context waits.
++        // No await may separate this final fence check from starting the fetch.
++        this.chrome.assertNoPendingComposerSubmission?.();
++        const requestId = randomUUID();
++        operationPhase(this.chrome, 'generation-submit', 'unknown');
++        traceOperation(this.chrome, 'conversation-request', { url: `${CHATGPT_ORIGIN}${ROUTES.conversation}`, requestedModel: body.model, temporaryChat: body.history_and_training_disabled === true });
++        const started = this.submission.now(), deadline = started + this.submission.timeoutMs;
++        const recovery = { count: 0 };
++        this.chrome.pendingGeneration = { page, id: requestId };
++        let res, status = 0, reason, generationEnded = false, stage = 'start';
++        try {
++            const startBudget = Math.min(this.submission.observationTimeoutMs, this.submission.timeoutMs);
++            const accepted = await boundedObservation(page.evaluate(startConversationTransaction, ROUTES.conversation, body, headers,
++                requestId, this.submission.timeoutMs), startBudget, signal).catch(error => {
++                    error.observationAction = 'start'; error.observationBudgetMs = startBudget;
++                    error.observationElapsedMs = Math.max(0, this.submission.now() - started); throw error;
++                });
++            if (accepted?.accepted === false && accepted.reason === 'previous_request_pending') {
++                if (typeof accepted.pendingId === 'string' && /^[a-f0-9-]{36}$/.test(accepted.pendingId))
++                    this.chrome.pendingGeneration.id = accepted.pendingId;
++                operationPhase(this.chrome, 'prepare', false);
++                throw new BrowserPreparationError('A previous browser request is still running. No new generation was submitted.', 'browser_generation_pending', 'prepare', false);
++            }
++            if (accepted?.accepted !== true) throw Object.assign(new Error('Transaction did not start cleanly.'), { reason: 'transaction_invalid' });
++            stage = 'metadata';
++            while (true) {
++                const state = await this.readSubmissionWithRecovery(page, requestId, 'peek', deadline, signal, recovery);
++                if (Number.isFinite(state?.status) && state.status > 0) status = state.status;
++                if (state?.state === 'settled') {
++                    generationEnded = this.clearPendingSubmission(page, requestId);
++                    if (!generationEnded) throw Object.assign(new Error('Transaction owner changed.'), { reason: 'transaction_invalid' });
++                    break;
++                }
++                if (state?.state !== 'pending') throw Object.assign(new Error('Transaction state unavailable.'), { reason: state?.state === 'missing' ? 'transaction_missing' : 'transaction_invalid' });
++                const remaining = deadline - this.submission.now();
++                if (remaining <= 0) throw Object.assign(new Error('Generation deadline.'), { reason: 'generation_deadline' });
++                await boundedObservation(this.submission.wait(Math.min(this.submission.pollMs, remaining)), undefined, signal);
++            }
++            stage = 'response';
++            operationPhase(this.chrome, 'response', status > 0 ? true : 'unknown');
++            res = await this.readSubmissionWithRecovery(page, requestId, 'read', deadline, signal, recovery);
++            if (res?.state !== 'settled') throw Object.assign(new Error('Settled response unavailable.'),
++                { reason: res?.state === 'missing' ? 'transaction_missing' : 'transaction_invalid' });
++            if (typeof res.text !== 'string' || typeof res.ok !== 'boolean')
++                throw Object.assign(new Error('Settled response invalid.'), { reason: 'transaction_invalid' });
++            const remaining = deadline - this.submission.now();
++            if (remaining > 0) await this.observeSubmission(page, requestId, 'consume', undefined,
++                Math.min(this.submission.cleanupMs, this.submission.observationTimeoutMs, remaining), signal).catch(() => {});
++            throwIfAborted(signal);
++            if (res.reason || !res.status) throw Object.assign(new Error('Browser fetch failed.'), { reason: SUBMISSION_REASONS.has(res.reason) ? res.reason : 'fetch_failed' });
++        } catch (error) {
++            if (error?.code === 'browser_generation_pending') throw error;
++            reason = signal?.aborted ? (signal.reason?.name === 'TimeoutError' ? 'generation_deadline' : 'caller_cancelled')
++                : SUBMISSION_REASONS.has(error?.reason) ? error.reason : submissionFailureReason(error);
++            const cleanup = generationEnded ? { terminationConfirmed: true, cleanupOutcome: 'already_settled', cleanupReadAttempts: 0 }
++                : await this.stopSubmissionEvidence(page, requestId, reason);
++            const submitted = status > 0 || res?.status > 0 ? true : 'unknown';
++            const phase = generationEnded ? 'response' : 'generation-submit';
++            operationPhase(this.chrome, phase, submitted);
++            const code = reason === 'caller_cancelled' ? 'adapter_request_cancelled'
++                : reason === 'generation_deadline' ? 'browser_generation_timeout'
++                : reason === 'fetch_failed' || reason === 'response_read_failed' ? 'browser_fetch_failed'
++                : generationEnded ? 'browser_response_unavailable' : 'browser_submission_uncertain';
++            const failure = new BrowserPreparationError(
++                reason === 'caller_cancelled' ? 'The caller cancelled an in-flight request. No generation replay was made.'
++                    : generationEnded ? 'The browser fetch ended but its complete response could not be read. No generation replay was made.'
++                    : 'The browser generation did not complete. No automatic generation replay was made.',
++                code, phase, submitted);
++            failure.details = { reason, elapsedMs: this.submission.now() - started,
++                ...(error?.observationAction ? { observationAction: error.observationAction, observationBudgetMs: error.observationBudgetMs, observationElapsedMs: error.observationElapsedMs } : {}),
++                ...(Number.isFinite(error?.observationTimerLagMs) ? { observationTimerLagMs: error.observationTimerLagMs } : {}),
++                observationStage: stage, observationRecoveryCount: recovery.count, ...cleanup };
++            traceOperation(this.chrome, 'submission-failed', failure.details);
++            throw failure;
++        }
++        operationPhase(this.chrome, 'response', res.status ? true : 'unknown');
++        traceOperation(this.chrome, 'conversation-response', { status: res.status, ok: res.ok });
++        if (!res.ok) throw new ChatError(res.status, res.text);
++        return res.text;
++    }
++    /**
++     * Poll stream_status until the turn finishes, then fetch the conversation
++     * detail and extract the final assistant message + reasoning. Guaranteed-
++     * correct floor for Pro turns regardless of streaming transport.
++     */
++    async pollToCompletion(page, conversationId, bearer, turn) {
++        const deadline = Date.now() + POLL_TIMEOUT_MS;
++        let lastText = "";
++        let lastReasoning = "";
++        // Local patch: if the conversation cannot be read back at all (for example a temporary
++        // chat that is not retrievable), stop after a few misses instead of spinning for the
++        // full 20 minutes.
++        let misses = 0;
++        while (Date.now() < deadline) {
++            throwIfAborted(turn.signal);
++            const detail = await this.fetchConversationDetail(page, conversationId, bearer);
++            throwIfAborted(turn.signal);
++            if (!detail && ++misses >= 8) {
++                throw new BrowserPreparationError('The handed-off conversation could not be read back to confirm completion. No generation replay was made.', 'browser_stream_incomplete', 'response', true);
++            }
++            if (detail) {
++                misses = 0;
++                const extracted = extractFinal(detail, turn.userMessageId);
++                if (extracted.text)
++                    lastText = extracted.text;
++                if (extracted.reasoning)
++                    lastReasoning = extracted.reasoning;
++                if (extracted.finished && extracted.text) {
++                    return { text: extracted.text, reasoning: extracted.reasoning, observedModel: extracted.model ?? null };
++                }
++            }
++            turn.onHeartbeat?.();
++            await delay(pollIntervalMs(), turn.signal);
++        }
++        log.warn("poll timed out");
++        throw new BrowserPreparationError('The conversation did not confirm a completed final answer before the polling deadline. No generation replay was made.', 'browser_stream_incomplete', 'response', true);
++    }
++    async fetchConversationDetail(page, conversationId, bearer) {
++        return evaluateWithRetry(page, async (origin, convId, token) => {
++            try {
++                const resp = await fetch(`${origin}/backend-api/conversation/${convId}`, {
++                    credentials: "include",
++                    headers: { accept: "application/json", authorization: `Bearer ${token}` },
++                });
++                if (!resp.ok)
++                    return null;
++                return await resp.json();
++            }
++            catch {
++                return null;
++            }
++        }, CHATGPT_ORIGIN, conversationId, bearer);
++    }
++}
++async function boundedObservation(pending, timeoutMs, signal) {
++    let timer, onAbort;
++    const tasks = [pending];
++    if (Number.isFinite(timeoutMs)) tasks.push(new Promise((_, reject) => {
++        const timerStarted = Date.now();
++        timer = setTimeout(() => reject(Object.assign(new Error('Browser observation timed out.'),
++            { code: 'observation_timeout', observationTimerLagMs: Math.max(0, Date.now() - timerStarted - timeoutMs) })), timeoutMs);
++    }));
++    if (signal) tasks.push(new Promise((_, reject) => {
++        onAbort = () => reject(Object.assign(new Error('Caller cancelled.'),
++            { reason: signal.reason?.name === 'TimeoutError' ? 'generation_deadline' : 'caller_cancelled' }));
++        if (signal.aborted) onAbort(); else signal.addEventListener('abort', onAbort, { once: true });
++    }));
++    try { return await Promise.race(tasks); }
++    finally { clearTimeout(timer); if (onAbort) signal.removeEventListener('abort', onAbort); }
++}
++export class ChatError extends Error {
++    status;
++    body;
++    constructor(status, body) {
++        super(`chat request failed (HTTP ${status}): ${body.slice(0, 300)}`);
++        this.status = status;
++        this.body = body;
++        this.name = "ChatError";
++    }
++}
++/**
++ * Extract the final assistant answer + reasoning from a /conversation detail
++ * mapping. Picks the most recent finished assistant message and the most recent
++ * reasoning (tool) message.
++ */
++function extractFinal(detail, userMessageId) {
++    const mapping = detail?.mapping;
++    if (!mapping || typeof mapping !== "object" || typeof userMessageId !== 'string' || !detail.current_node) {
++        return { text: "", reasoning: "", finished: false };
++    }
++    let bestAnswer = "";
++    let hasAnswer = false;
++    let bestAnswerFinished = false;
++    let bestAnswerModel = null;
++    let bestReasoning = "";
++    let hasReasoning = false;
++    const branch = [], seen = new Set();
++    let key = detail.current_node, foundRequest = false;
++    while (key && branch.length < 10_000 && !seen.has(key)) {
++        seen.add(key);
++        const node = mapping[key];
++        if (!node) break;
++        if (key === userMessageId || node.message?.id === userMessageId) { foundRequest = true; break; }
++        branch.push(key);
++        key = node.parent;
++    }
++    if (!foundRequest) return { text: '', reasoning: '', finished: false };
++    for (const key of branch) {
++        const msg = mapping[key]?.message;
++        if (!msg)
++            continue;
++        const role = msg.author?.role;
++        const meta = msg.metadata ?? {};
++        const isReasoning = role === "tool" || msg.channel === 'analysis' || msg.content?.content_type === "thoughts" || meta.initial_text === "Reasoning";
++        const parts = joinParts(msg.content);
++        if (isReasoning) {
++            if (!hasReasoning && parts) {
++                bestReasoning = parts;
++                hasReasoning = true;
++            }
++            continue;
++        }
++        // Local patch: skip tool working messages and recaps (recipient other than "all", or a
++        // content type other than plain text), as the stream reader does.
++        const userFacing = (msg.recipient == null || msg.recipient === "all") &&
++            (msg.channel == null || msg.channel === 'final') &&
++            (msg.content?.content_type == null || msg.content.content_type === "text" || msg.content.content_type === "multimodal_text");
++        if (role === "assistant" && userFacing && !meta.is_visually_hidden_from_conversation) {
++            if (!hasAnswer) {
++                bestAnswer = parts;
++                bestAnswerModel = typeof meta.model_slug === "string" ? meta.model_slug : null;
++                hasAnswer = true;
++                bestAnswerFinished = msg.status === "finished_successfully" && msg.end_turn === true;
++            }
++        }
++    }
++    return { text: bestAnswer, reasoning: bestReasoning, finished: bestAnswerFinished, model: bestAnswerModel };
++}
++function joinParts(content) {
++    if (!content)
++        return "";
++    const parts = content.parts;
++    if (Array.isArray(parts)) {
++        return parts
++            .map((p) => (typeof p === "string" ? p : p?.text ?? p?.content ?? p?.summary ?? ""))
++            .join("");
++    }
++    if (typeof content.text === "string")
++        return content.text;
++    return "";
++}
++function throwIfAborted(signal) {
++    if (signal?.aborted)
++        throw new Error("aborted");
++}
++function delay(ms, signal) {
++    if (!signal)
++        return new Promise((resolve) => setTimeout(resolve, ms));
++    return new Promise((resolve, reject) => {
++        const timer = setTimeout(() => {
++            signal.removeEventListener("abort", onAbort);
++            resolve();
++        }, ms);
++        const onAbort = () => {
++            clearTimeout(timer);
++            reject(new Error("aborted"));
++        };
++        signal.addEventListener("abort", onAbort, { once: true });
++    });
++}
++//# sourceMappingURL=conversation.js.map
+diff --git a/dist/chat/sse-reassembler.js b/dist/chat/sse-reassembler.js
+--- a/dist/chat/sse-reassembler.js
++++ b/dist/chat/sse-reassembler.js
+@@ -14,11 +14,18 @@
+     events;
+     buffer = "";
+     doc = undefined;
++    lastPointer = "";
++    lastOperation = "add";
++    actualModel;
+     conversationId;
+     topicId;
+     answer = "";
++    // Local patch: id of the assistant message whose text is currently held in `answer`.
++    answerMessageId;
+     reasoning = "";
+     done = false;
++    parseErrors = 0;
++    selectedMessage;
+     sawHandoff = false;
+     constructor(events = {}) {
+         this.events = events;
+@@ -36,16 +43,18 @@
+         return this.conversationId;
+     }
+     result() {
+-        return { text: this.answer, reasoning: this.reasoning };
++        return { text: this.answer, reasoning: this.reasoning, model: this.actualModel, done: this.done, parseErrors: this.parseErrors, selectedMessage: this.selectedMessage };
+     }
+     /** Feed a raw chunk of SSE text. Safe to call repeatedly with partial data. */
+     push(chunk) {
+         this.buffer += chunk;
+         let idx;
+         // SSE frames are separated by a blank line ("\n\n").
+-        while ((idx = this.buffer.indexOf("\n\n")) !== -1) {
++        let separator;
++        while ((separator = /\r?\n\r?\n/.exec(this.buffer)) !== null) {
++            idx = separator.index;
+             const frame = this.buffer.slice(0, idx);
+-            this.buffer = this.buffer.slice(idx + 2);
++            this.buffer = this.buffer.slice(idx + separator[0].length);
+             this.handleFrame(frame);
+         }
+     }
+@@ -57,7 +66,7 @@
+         }
+     }
+     handleFrame(frame) {
+-        const lines = frame.split("\n");
++        const lines = frame.split(/\r?\n/);
+         let eventName;
+         const dataLines = [];
+         for (const line of lines) {
+@@ -77,16 +86,24 @@
+             return;
+         }
+         // The version banner: data: "v1"
+-        if (dataStr === '"v1"' || eventName === "delta_encoding")
+-            return;
++        if (dataStr === '"v1"' || eventName === "delta_encoding") {
++            if (this.done) { this.parseErrors++; return; }
++            if (dataStr !== '"v1"') throw new Error("Unsupported delta encoding");
++            this.doc = undefined;
++            this.lastPointer = "";
++            this.lastOperation = "add";
++            return;
++        }
+         let payload;
+         try {
+             payload = JSON.parse(dataStr);
+         }
+         catch {
+-            return; // ignore unparseable frames
++            this.parseErrors++;
++            return;
+         }
+         if (eventName === "delta") {
++            if (this.done) { this.parseErrors++; return; }
+             this.applyDelta(payload);
+             return;
+         }
+@@ -134,15 +151,15 @@
+         this.events.onControl?.({ type: "other", raw: payload });
+     }
+     applyDelta(delta) {
+-        const op = delta.o;
+-        const ptr = delta.p;
+-        const value = delta.v;
+-        if (op === undefined && (ptr === undefined || ptr === "")) {
+-            // Whole-document replace (new message branch). v is the full doc.
+-            this.doc = value;
+-            this.afterDocChange();
+-            return;
+-        }
++        // Compact v1 events inherit the previous TOP-LEVEL pointer and operation.
++        // A {v:"next token"} frame is usually an append, not a new document.
++        const op = delta.o ?? this.lastOperation;
++        const ptr = delta.p ?? this.lastPointer;
++        this.lastPointer = ptr;
++        this.lastOperation = op;
++        this.applyAt(ptr, op, delta.v);
++    }
++    applyAt(ptr, op, value) {
+         if (ptr === "" && (op === "add" || op === "replace")) {
+             this.doc = value;
+             this.afterDocChange();
+@@ -150,17 +167,18 @@
+         }
+         if (op === "patch" && Array.isArray(value)) {
+             for (const sub of value)
+-                this.applyDelta(sub);
++                this.applyAt(sub.p, sub.o, sub.v);
+             return;
+         }
+         const pointer = ptr ?? "";
+         if (op === "append") {
+-            this.appendAtPointer(pointer, String(value ?? ""));
+-        }
+-        else {
++            this.appendAtPointer(pointer, value);
++        }
++        else if (op === "add" || op === "replace") {
+             // add | replace | (default) → set value at pointer
+-            this.setAtPointer(pointer, value);
+-        }
++            this.setAtPointer(pointer, value, op);
++        }
++        else throw new Error(`Unsupported delta operation: ${op}`);
+         this.afterDocChange(pointer, op, value);
+     }
+     // --- JSON pointer helpers (RFC6901-ish, sufficient for this protocol) ---
+@@ -171,6 +189,8 @@
+             .slice(1)
+             .split("/")
+             .map((t) => t.replace(/~1/g, "/").replace(/~0/g, "~"));
++        if (tokens.some(t => ["__proto__", "prototype", "constructor"].includes(t)))
++            throw new Error("Unsafe delta pointer");
+         let node = this.doc;
+         for (let i = 0; i < tokens.length - 1; i++) {
+             const key = tokens[i];
+@@ -178,9 +198,17 @@
+                 return null;
+             node = Array.isArray(node) ? node[Number(key)] : node[key];
+         }
++        // Local patch (not upstream): if the walk lands on a primitive, the delta is
++        // addressing a branch this reassembler does not model — ChatGPT added fields
++        // such as `conversation_followup_suggestions_eligible` whose patch target can
++        // be a string. Assigning a property on a primitive throws
++        // "Cannot create property ... on string", which killed the whole turn even
++        // though the visible answer had already been captured. Treat it as a no-op.
++        if (node == null || (typeof node !== "object" && !Array.isArray(node)))
++            return null;
+         return { parent: node, key: tokens[tokens.length - 1] };
+     }
+-    setAtPointer(pointer, value) {
++    setAtPointer(pointer, value, op = "replace") {
+         if (pointer === "") {
+             this.doc = value;
+             return;
+@@ -188,27 +216,41 @@
+         const res = this.resolveParent(pointer);
+         if (!res || res.parent == null)
+             return;
+-        if (Array.isArray(res.parent))
+-            res.parent[Number(res.key)] = value;
++        if (Array.isArray(res.parent)) {
++            if (op === "add") res.parent.splice(res.key === "-" ? res.parent.length : Number(res.key), 0, value);
++            else res.parent[Number(res.key)] = value;
++        }
+         else
+             res.parent[res.key] = value;
+     }
+     appendAtPointer(pointer, value) {
++        if (pointer === "") { this.doc = appendValue(this.doc, value); return; }
+         const res = this.resolveParent(pointer);
+         if (!res || res.parent == null)
+             return;
+         const key = Array.isArray(res.parent) ? Number(res.key) : res.key;
+         const current = res.parent[key];
+-        res.parent[key] = (typeof current === "string" ? current : "") + value;
++        res.parent[key] = appendValue(current, value);
+     }
+     // --- after each mutation, recompute visible answer / reasoning ---
+     afterDocChange(_pointer, _op, _value) {
+         const msg = this.doc?.message;
+         if (!msg)
+             return;
++        if (msg.author?.role === "assistant" && msg.metadata?.model_slug)
++            this.actualModel = msg.metadata.model_slug;
+         if (this.doc?.conversation_id)
+             this.conversationId = this.doc.conversation_id;
+         const tracked = classify(msg);
++        const finalChannel = msg.channel == null || msg.channel === 'final';
++        const userFacing = tracked.role === 'assistant' && !tracked.hidden && !tracked.reasoning && finalChannel &&
++            (msg.recipient == null || msg.recipient === 'all') &&
++            (tracked.contentType == null || tracked.contentType === 'text' || tracked.contentType === 'multimodal_text');
++        if (this.answerMessageId && msg.id === this.answerMessageId && !userFacing) {
++            this.answer = '';
++            this.answerMessageId = undefined;
++            this.selectedMessage = undefined;
++        }
+         if (tracked.hidden)
+             return;
+         const joined = tracked.parts.join("");
+@@ -221,19 +263,42 @@
+             }
+             return;
+         }
++        // Local patch: ChatGPT's own built-in tools (Python, search, ...) put their working
++        // messages on the same stream as the reply: an assistant message with
++        // content_type "code" and a non-"all" recipient is input for a tool, not text for the
++        // user. Taking it as the answer returned the tool's source code instead of the reply.
++        // Only assistant messages addressed to the user (recipient "all") count, and a new
++        // message replaces the previous answer instead of being merged into it.
+         if (tracked.role && VISIBLE_ASSISTANT_ROLES.has(tracked.role)) {
+-            if (joined.length >= this.answer.length) {
+-                const chunk = joined.slice(this.answer.length);
+-                this.answer = joined;
+-                if (chunk)
+-                    this.events.onTextDelta?.(chunk, this.answer);
++            if (!finalChannel) return;
++            if (msg.recipient != null && msg.recipient !== "all")
++                return;
++            if (tracked.contentType != null && tracked.contentType !== "text" && tracked.contentType !== "multimodal_text")
++                return;
++            if (msg.id && this.answerMessageId && msg.id !== this.answerMessageId) {
++                this.answer = "";
+             }
+-            else {
+-                // Branch switched (e.g. resume replaced doc); take the longer.
+-                this.answer = joined.length > this.answer.length ? joined : this.answer;
+-            }
+-        }
+-    }
++            if (msg.id)
++                this.answerMessageId = msg.id;
++            this.selectedMessage = { id: msg.id ?? null, status: msg.status ?? null, endTurn: msg.end_turn ?? null, channel: msg.channel ?? null, model: typeof msg.metadata?.model_slug === "string" ? msg.metadata.model_slug : null };
++            // The current document is authoritative. A replacement may be shorter
++            // or rewrite an earlier prefix; retaining the longest text corrupts it.
++            const previous = this.answer;
++            this.answer = joined;
++            if (joined.startsWith(previous)) {
++                const chunk = joined.slice(previous.length);
++                if (chunk) this.events.onTextDelta?.(chunk, this.answer);
++            } else this.events.onTextReplace?.(joined);
++        }
++    }
++}
++function appendValue(current, value) {
++    if (current == null) return value;
++    if (typeof current === "string" && typeof value === "string") return current + value;
++    if (Array.isArray(current)) return current.concat(Array.isArray(value) ? value : [value]);
++    if (typeof current === "object" && typeof value === "object" && value && !Array.isArray(value))
++        return { ...current, ...value };
++    throw new Error("Incompatible delta append types");
+ }
+ function classify(msg) {
+     const role = msg?.author?.role;
+@@ -241,7 +306,7 @@
+     const meta = msg?.metadata ?? {};
+     const hidden = !!meta.is_visually_hidden_from_conversation;
+     // The "tool" author with initial_text "Reasoning" is the CoT summary stream.
+-    const reasoning = role === "tool" ||
++    const reasoning = role === "tool" || msg.channel === "analysis" ||
+         contentType === "thoughts" ||
+         contentType === "reasoning_recap" ||
+         meta.initial_text === "Reasoning";
+@@ -278,13 +343,17 @@
+     const r = new DeltaReassembler(events);
+     r.push(sse);
+     r.end();
+-    const { text, reasoning } = r.result();
++    const { text, reasoning, model, done, parseErrors, selectedMessage } = r.result();
+     return {
+         text,
+         reasoning,
++        model,
++        done,
++        parseErrors,
++        selectedMessage,
+         conversationId: r.conversation,
+         handoff: r.handoffRequested,
+         topicId: r.resumeTopicId,
+     };
+ }
+-//# sourceMappingURL=sse-reassembler.js.map
+\ No newline at end of file
++//# sourceMappingURL=sse-reassembler.js.map
+diff --git a/dist/chat/submission.js b/dist/chat/submission.js
+new file mode 100644
+--- /dev/null
++++ b/dist/chat/submission.js
+@@ -0,0 +1,78 @@
++// A generation is launched once. Every subsequent CDP evaluation is a short
++// state read/abort, never an awaited network operation or a replay.
++export function startConversationTransaction(route, body, headers, id, timeoutMs) {
++    const slots = globalThis.__dshConversationTransactions ??= new Map();
++    // Settled leftovers can be discarded; their result is never delivered to a
++    // different request. An in-flight leftover still prevents a second POST.
++    for (const [key, slot] of slots) if (slot.settled) slots.delete(key);
++    if (slots.size) return { accepted: false, reason: 'previous_request_pending', pendingId: slots.keys().next().value };
++    const controller = new AbortController();
++    const slot = { settled: false, controller, result: null, abortReason: null, status: 0 };
++    slots.set(id, slot);
++    const timer = setTimeout(() => { slot.abortReason ??= 'generation_deadline'; controller.abort(); }, timeoutMs);
++    // Intentionally do not return this promise: page.evaluate would await it
++    // under Puppeteer's 180s protocol timeout even though fetch has a 240s limit.
++    void (async () => {
++        let reading = false;
++        try {
++            const response = await fetch(route, { method: 'POST', credentials: 'include',
++                headers, body: JSON.stringify(body), signal: controller.signal });
++            slot.status = response.status;
++            reading = true;
++            const text = await response.text();
++            slot.result = { ok: response.ok, status: response.status, text, reason: null };
++        } catch {
++            slot.result = { ok: false, status: slot.status, text: '',
++                reason: slot.abortReason ?? (reading ? 'response_read_failed' : 'fetch_failed') };
++        } finally {
++            clearTimeout(timer);
++            slot.settled = true;
++        }
++    })();
++    return { accepted: true };
++}
++
++export function observeConversationTransaction(id, action = 'read', reason = 'caller_cancelled') {
++    const slots = globalThis.__dshConversationTransactions;
++    const slot = slots?.get(id);
++    if (!slot) return { state: 'missing' };
++    if (action === 'abort' && !slot.settled) {
++        slot.abortReason ??= reason === 'generation_deadline' ? reason : 'caller_cancelled';
++        slot.controller.abort();
++    }
++    if (!slot.settled) return { state: 'pending', status: slot.status };
++    if (action === 'consume') { slots.delete(id); return { state: 'settled', status: slot.status }; }
++    if (action === 'peek' || action === 'abort') return { state: 'settled', status: slot.status };
++    return { state: 'settled', ...slot.result };
++}
++
++export const SUBMISSION_REASONS = new Set(['cdp_timeout', 'observation_timeout', 'context_lost', 'browser_disconnected',
++    'generation_deadline', 'caller_cancelled', 'fetch_failed', 'response_read_failed', 'transaction_missing',
++    'transaction_invalid', 'previous_request_pending', 'preparation_deadline', 'unknown']);
++export function submissionFailureReason(error) {
++    const message = String(error?.message ?? '');
++    if (/Runtime\.(?:callFunctionOn|evaluate) timed out|protocolTimeout/i.test(message)) return 'cdp_timeout';
++    if (error?.code === 'observation_timeout') return 'observation_timeout';
++    if (/Execution context|Cannot find context|Navigating frame|detached/i.test(message)) return 'context_lost';
++    if (/Target closed|Session closed|Connection closed|disconnected/i.test(message)) return 'browser_disconnected';
++    return 'unknown';
++}
++export function safeSubmissionDetails(details) {
++    if (!details || typeof details !== 'object') return {};
++    return {
++        ...(SUBMISSION_REASONS.has(details.reason) ? { reason: details.reason } : {}),
++        ...(Number.isFinite(details.elapsedMs) && details.elapsedMs >= 0 ? { elapsedMs: Math.min(details.elapsedMs, 86_400_000) } : {}),
++        ...(typeof details.terminationConfirmed === 'boolean' ? { terminationConfirmed: details.terminationConfirmed } : {}),
++        ...(['start', 'metadata', 'response'].includes(details.observationStage) ? { observationStage: details.observationStage } : {}),
++        ...(Number.isInteger(details.observationRecoveryCount) && details.observationRecoveryCount >= 0 && details.observationRecoveryCount <= 1 ? { observationRecoveryCount: details.observationRecoveryCount } : {}),
++        ...(Number.isInteger(details.cleanupReadAttempts) && details.cleanupReadAttempts >= 0 && details.cleanupReadAttempts <= 100 ? { cleanupReadAttempts: details.cleanupReadAttempts } : {}),
++        ...(Number.isFinite(details.observationElapsedMs) && details.observationElapsedMs >= 0 ? { observationElapsedMs: Math.min(details.observationElapsedMs, 86_400_000) } : {}),
++        ...(Number.isFinite(details.observationTimerLagMs) && details.observationTimerLagMs >= 0 ? { observationTimerLagMs: Math.min(details.observationTimerLagMs, 86_400_000) } : {}),
++        ...(Number.isFinite(details.cleanupElapsedMs) && details.cleanupElapsedMs >= 0 ? { cleanupElapsedMs: Math.min(details.cleanupElapsedMs, 86_400_000) } : {}),
++        ...(['start', 'read', 'peek', 'abort', 'consume'].includes(details.observationAction) ? { observationAction: details.observationAction } : {}),
++        ...(Number.isFinite(details.observationBudgetMs) && details.observationBudgetMs >= 0 ? { observationBudgetMs: Math.min(details.observationBudgetMs, 240_000) } : {}),
++        ...(['settled', 'already_settled', 'pending', 'missing', 'transaction_invalid', 'cdp_timeout', 'observation_timeout', 'context_lost', 'browser_disconnected', 'unknown'].includes(details.cleanupOutcome) ? { cleanupOutcome: details.cleanupOutcome } : {}),
++        ...(['read', 'peek', 'abort'].includes(details.cleanupAction) ? { cleanupAction: details.cleanupAction } : {}),
++        ...(Number.isFinite(details.cleanupObservationBudgetMs) && details.cleanupObservationBudgetMs >= 0 ? { cleanupObservationBudgetMs: Math.min(details.cleanupObservationBudgetMs, 240_000) } : {}),
++    };
++}
+diff --git a/dist/log.js b/dist/log.js
+--- a/dist/log.js
++++ b/dist/log.js
+@@ -1,49 +1,51 @@
+-import { appendFileSync, mkdirSync } from "node:fs";
+-import { join } from "node:path";
+-import { PATHS } from "./constants.js";
+-const LEVELS = { debug: 10, info: 20, warn: 30, error: 40 };
+-function envLevel() {
+-    const raw = (process.env.PI_CHATGPT_WEB_LOG_LEVEL || "info").toLowerCase();
+-    return LEVELS[raw] ?? LEVELS.info;
+-}
+-function ts() {
+-    return new Date().toISOString();
+-}
+-function writeFileLine(name, line) {
+-    try {
+-        const dir = PATHS.logDir();
+-        mkdirSync(dir, { recursive: true });
+-        appendFileSync(join(dir, name), line + "\n");
+-    }
+-    catch {
+-        // best-effort; never throw from the logger
+-    }
+-}
+-function emit(level, scope, msg, extra) {
+-    if (LEVELS[level] < envLevel())
+-        return;
+-    const detail = extra === undefined ? "" : " " + safeJson(extra);
+-    const line = `${ts()} ${level.toUpperCase().padEnd(5)} [${scope}] ${msg}${detail}`;
+-    const stream = level === "error" || level === "warn" ? process.stderr : process.stderr;
+-    // CLI human output goes through console.log elsewhere; logs go to stderr +
+-    // file so they never corrupt SSE/stdout payloads.
+-    stream.write(line + "\n");
+-    writeFileLine("adapter.log", line);
+-}
+-function safeJson(value) {
+-    try {
+-        return typeof value === "string" ? value : JSON.stringify(value);
+-    }
+-    catch {
+-        return String(value);
+-    }
+-}
+-export function createLogger(scope) {
+-    return {
+-        debug: (msg, extra) => emit("debug", scope, msg, extra),
+-        info: (msg, extra) => emit("info", scope, msg, extra),
+-        warn: (msg, extra) => emit("warn", scope, msg, extra),
+-        error: (msg, extra) => emit("error", scope, msg, extra),
+-    };
+-}
++import { safeDiagnosticRecord } from '../../../../../diagnostic-policy.mjs';
++import { appendFileSync, mkdirSync } from "node:fs";
++import { join } from "node:path";
++import { PATHS } from "./constants.js";
++const LEVELS = { debug: 10, info: 20, warn: 30, error: 40 };
++function envLevel() {
++    const raw = (process.env.PI_CHATGPT_WEB_LOG_LEVEL || "info").toLowerCase();
++    return LEVELS[raw] ?? LEVELS.info;
++}
++function ts() {
++    return new Date().toISOString();
++}
++function writeFileLine(name, line) {
++    try {
++        const dir = PATHS.logDir();
++        mkdirSync(dir, { recursive: true, mode: 0o700 });
++        appendFileSync(join(dir, name), line + "\n", {mode: 0o600});
++    }
++    catch {
++        // best-effort; never throw from the logger
++    }
++}
++function emit(level, scope, msg, extra) {
++    if (LEVELS[level] < envLevel())
++        return;
++    const details = extra && typeof extra === "object" ? extra : {};
++    const record = safeDiagnosticRecord({ ...details, timestamp: ts(), message: String(msg) });
++    const line = JSON.stringify({ level, ...record });
++    const stream = level === "error" || level === "warn" ? process.stderr : process.stderr;
++    // CLI human output goes through console.log elsewhere; logs go to stderr +
++    // file so they never corrupt SSE/stdout payloads.
++    stream.write(line + "\n");
++    writeFileLine("adapter.log", line);
++}
++function safeJson(value) {
++    try {
++        return typeof value === "string" ? value : JSON.stringify(value);
++    }
++    catch {
++        return String(value);
++    }
++}
++export function createLogger(scope) {
++    return {
++        debug: (msg, extra) => emit("debug", scope, msg, extra),
++        info: (msg, extra) => emit("info", scope, msg, extra),
++        warn: (msg, extra) => emit("warn", scope, msg, extra),
++        error: (msg, extra) => emit("error", scope, msg, extra),
++    };
++}
+ //# sourceMappingURL=log.js.map
+\ No newline at end of file
+diff --git a/dist/server/http.js b/dist/server/http.js
+--- a/dist/server/http.js
++++ b/dist/server/http.js
+@@ -1,11 +1,14 @@
+ import { createServer } from "node:http";
++import { authorizeLocalRequest, readServiceToken, requireServiceToken, assertLoopbackListenHost } from '../../../../../../http-security.mjs';
+ import { randomUUID } from "node:crypto";
+ import { ADVERTISED_MODELS, DEFAULT_HOST, DEFAULT_PORT } from "../constants.js";
+ import { createLogger } from "../log.js";
+ import { ManagedChrome } from "../browser/supervisor.js";
++import { BrowserPreparationError, composerState } from "../browser/composer.js";
++import { withBrowserOperation, operationState, operationQueueState, operationPhase } from "../browser/operations.js";
+ import { ChatClient, ChatError } from "../chat/conversation.js";
++import { safeSubmissionDetails } from '../chat/submission.js';
+ import { ensureFreshToken, SessionExpiredError } from "../auth/refresh.js";
+-import { authHealth } from "../auth/store.js";
+ import { parseOpenAIRequest, chatCompletionChunk, chatCompletionFull, responsesFull, responsesTextDeltaEvent, responsesCompletedEvent, } from "../translate.js";
+ const log = createLogger("server");
+ const MAX_BODY_BYTES = 8 * 1024 * 1024;
+@@ -16,14 +19,18 @@
+     chat;
+     server = createServer((req, res) => this.handle(req, res));
+     warmTimer = null;
++    busy = false;
+     constructor(opts = {}) {
+         this.opts = opts;
++        this.internalToken = readServiceToken('PCW_INTERNAL_TOKEN', opts.internalToken);
+         this.chrome = new ManagedChrome({ headless: opts.headless ?? false });
+         this.chat = new ChatClient(this.chrome);
+     }
+     async listen() {
+         const host = this.opts.host ?? DEFAULT_HOST;
+         const port = this.opts.port ?? DEFAULT_PORT;
++        requireServiceToken(this.internalToken);
++        assertLoopbackListenHost(host);
+         await new Promise((resolve, reject) => {
+             this.server.once("error", reject);
+             this.server.listen(port, host, () => {
+@@ -44,18 +51,23 @@
+     startKeepWarm() {
+         // Ping every 30s to keep the anti-bot score warm; best-effort.
+         this.warmTimer = setInterval(() => {
+-            this.chrome.ping().catch(() => { });
++            if (!this.chrome.page || operationState(this.chrome) || (this.chrome.generationBlocked ?? !!this.chrome.pendingGeneration)) return;
++            withBrowserOperation(this.chrome, 'keep-warm', null, () => this.chrome.ping(), { background: true }).catch(() => { });
+         }, 30_000);
+         this.warmTimer.unref?.();
+     }
+     async handle(req, res) {
+-        const url = new URL(req.url || "/", "http://localhost");
+-        const path = url.pathname.replace(/\/+$/, "") || "/";
+-        try {
+-            if (req.method === "GET" && (path === "/health" || path === "/")) {
+-                return this.json(res, 200, { status: "ok", service: "pi-chatgpt-web-adapter" });
++        try {
++            const authenticated = authorizeLocalRequest(req, this.internalToken);
++            if (!authenticated) return this.json(res, 200, { status: 'ok', service: 'pi-chatgpt-web-adapter' });
++            const path = req.url;
++            if (req.method === "GET" && path === "/health") {
++                return this.json(res, 200, { status: "ok", service: "pi-chatgpt-web-adapter", security: 'service-bearer-v1', revision: 'submission-lifecycle-20261006', busy: !!operationState(this.chrome), generationBlocked: this.chrome.generationBlocked ?? !!this.chrome.pendingGeneration, operation: operationState(this.chrome), queue: operationQueueState(this.chrome) });
+             }
+             if (req.method === "GET" && path === "/doctor") {
++                return this.json(res, 200, await this.doctorReport());
++            }
++            if (req.method === "GET" && path === "/readiness") {
+                 return this.json(res, 200, await this.doctorReport());
+             }
+             if (req.method === "GET" && (path === "/v1/models" || path === "/models")) {
+@@ -73,36 +85,57 @@
+             this.json(res, 404, { error: { message: `no route for ${req.method} ${path}` } });
+         }
+         catch (err) {
+-            log.error("unhandled", { err: String(err) });
+-            const status = statusCode(err) ?? 500;
++            if (res.destroyed) return;
++            log.error("unhandled", { requestId: err.requestId, phase: err.phase, code: err.code ?? 'operation_error' });
++            const status = statusCode(err) ?? err.status ?? 500;
+             const message = err instanceof Error ? err.message : String(err);
+             if (!res.headersSent)
+-                this.json(res, status, { error: { message } });
++                this.json(res, status, { error: { message, code: err.code, requestId: err.requestId, phase: err.phase, generation_submitted: err.generationSubmitted } });
+             else
+                 res.end();
+         }
+     }
+     async handleChat(req, res, surface) {
+-        const body = await readJson(req);
++        const cancellation = requestCancellation(req, res);
++        try {
++            return await withBrowserOperation(this.chrome, 'chat', req.headers['x-dsh-request-id'], async () => {
++                this.busy = true;
++                try { return await this.handleChatExclusive(req, res, surface, cancellation.signal); }
++                finally { this.busy = false; }
++            }, { queue: true, signal: cancellation.signal });
++        } finally { cancellation.dispose(); }
++    }
++    async handleChatExclusive(req, res, surface, signal) {
++        const body = await readJson(req, signal);
+         const parsed = parseOpenAIRequest(body);
+         if (!parsed.prompt) {
+             return this.json(res, 400, { error: { message: "no prompt content in request" } });
+         }
++        try {
++            this.chrome.assertNoPendingComposerSubmission?.();
++            if (this.chrome.pendingGeneration) await this.chat.assertNoPendingSubmission();
++        }
++        catch (error) { return this.chatError(res, error); }
+         let bearer;
+-        try {
+-            bearer = await ensureFreshToken(this.chrome);
++        operationPhase(this.chrome, 'auth');
++        throwIfCancelled(signal);
++        try {
++            bearer = await ensureFreshToken(this.chrome, undefined, signal);
+         }
+         catch (err) {
++            throwIfCancelled(signal);
++            if (err instanceof BrowserPreparationError) return this.chatError(res, err);
+             const status = err instanceof SessionExpiredError ? 401 : 500;
+-            return this.json(res, status, { error: { message: err.message } });
+-        }
++            return this.json(res, status, { error: { message: err.message, code: 'browser_auth_error', requestId: operationState(this.chrome)?.requestId, phase: 'auth', generation_submitted: false, retryable: false } });
++        }
++        throwIfCancelled(signal);
+         if (!parsed.stream) {
+             try {
+-                const signal = disconnectSignal(res);
+-                const result = await this.chat.run({ prompt: parsed.prompt, system: parsed.system, model: parsed.model, effort: parsed.effort, signal }, bearer);
++                const result = await this.chat.run({ prompt: parsed.prompt, system: parsed.system, model: parsed.model, effort: parsed.effort, requireModelEvidence: body.dsh_require_model_evidence === true, signal, requestId: operationState(this.chrome)?.requestId }, bearer);
+                 const payload = surface === "responses"
+                     ? responsesFull(result.model, result.text, result.reasoning || undefined)
+                     : chatCompletionFull(result.model, result.text, result.reasoning || undefined);
++                payload.model_evidence = { requested_model: parsed.model, observed_model: result.observedModel ?? null, source: result.viaPoll ? "conversation-final" : "stream-final" };
+                 return this.json(res, 200, payload);
+             }
+             catch (err) {
+@@ -118,7 +151,6 @@
+         });
+         const itemId = `msg_${randomUUID()}`;
+         const streamId = `chatcmpl-${randomUUID()}`;
+-        const signal = disconnectSignal(res);
+         const heartbeat = setInterval(() => {
+             if (!signal.aborted)
+                 res.write(": ping\n\n");
+@@ -132,6 +164,7 @@
+                 system: parsed.system,
+                 model: parsed.model,
+                 effort: parsed.effort,
++                requireModelEvidence: body.dsh_require_model_evidence === true,
+                 signal,
+                 onTextDelta: (chunk) => {
+                     if (signal.aborted)
+@@ -147,6 +180,7 @@
+                 },
+             }, bearer);
+             clearInterval(heartbeat);
++            if (signal?.aborted || res.destroyed) return;
+             if (surface === "chat") {
+                 res.write(chatCompletionChunk(streamId, parsed.model, {}, true));
+                 res.write("data: [DONE]\n\n");
+@@ -160,48 +194,67 @@
+         catch (err) {
+             clearInterval(heartbeat);
+             const message = err instanceof Error ? err.message : String(err);
+-            log.error("stream failed", { message });
+-            res.write(`event: error\ndata: ${JSON.stringify({ error: { message } })}\n\n`);
++            const state = operationState(this.chrome);
++            log.error("stream failed", { code: err.code ?? 'browser_operation_failed', requestId: state?.requestId });
++            if (signal?.aborted || res.destroyed) return;
++            res.write(`event: error\ndata: ${JSON.stringify({ error: { message, code: err.code ?? 'browser_operation_failed', requestId: state?.requestId, phase: err.phase ?? state?.phase, generation_submitted: err.generationSubmitted ?? state?.generation_submitted ?? 'unknown', retryable: false, details: safeSubmissionDetails(err.details) } })}\n\n`);
+             res.end();
+         }
+     }
+     chatError(res, err) {
++        if (err instanceof BrowserPreparationError) {
++            return this.json(res, err.status, { error: { message: err.message, code: err.code,
++                requestId: operationState(this.chrome)?.requestId, phase: err.phase, generation_submitted: err.generationSubmitted, retryable: false, details: safeSubmissionDetails(err.details) } });
++        }
+         if (err instanceof ChatError) {
+-            return this.json(res, err.status || 502, { error: { message: err.message } });
++            const state = operationState(this.chrome);
++            return this.json(res, err.status || 502, { error: { message: err.message, code: 'browser_http_error', requestId: state?.requestId, phase: state?.phase ?? 'response', generation_submitted: state?.generation_submitted ?? 'unknown', retryable: false } });
+         }
+         if (err instanceof SessionExpiredError) {
+             return this.json(res, 401, { error: { message: err.message } });
+         }
+-        return this.json(res, 502, { error: { message: String(err) } });
++        const state = operationState(this.chrome);
++        return this.json(res, 502, { error: { message: 'The browser operation failed. No automatic generation replay was made.', code: 'browser_operation_failed', requestId: state?.requestId, phase: state?.phase, generation_submitted: state?.generation_submitted ?? 'unknown', retryable: false } });
+     }
+     async doctorReport() {
+-        const auth = authHealth(300);
+-        let browser = "unknown";
+-        let sentinel = "unknown";
+-        try {
+-            await this.chrome.pageContext();
+-            browser = "ok";
+-            const set = await this.chrome.mintSentinelHeaders();
+-            sentinel = set.headers["openai-sentinel-chat-requirements-token"] ? "ok" : "no-token";
+-        }
+-        catch (err) {
+-            browser = `error: ${err.message}`;
+-        }
+-        return { auth, browser, sentinel };
++        const report = { service: 'pi-chatgpt-web-adapter', diagnosticMode: 'passive', authenticated: null,
++            authenticationCheck: 'not_performed', temporaryChat: process.env.PCW_TEMPORARY_CHAT === '1',
++            busy: !!operationState(this.chrome), generationBlocked: this.chrome.generationBlocked ?? !!this.chrome.pendingGeneration, operation: operationState(this.chrome), queue: operationQueueState(this.chrome) };
++        if (report.busy || report.queue.queued || report.generationBlocked) return report;
++        return withBrowserOperation(this.chrome, 'readiness', null, async () => {
++            const page = this.chrome.page;
++            report.browserRunning = !!page && !page.isClosed();
++            if (report.browserRunning) {
++                try { report.composer = await composerState(page); }
++                catch { report.composer = { available: false, reason: 'context_unavailable' }; }
++            }
++            return report;
++        }, { background: true });
+     }
+     json(res, status, payload) {
++        if (res.destroyed || res.writableEnded) return;
+         const data = JSON.stringify(payload);
+         res.writeHead(status, { "content-type": "application/json" });
+         res.end(data);
+     }
+ }
+-function disconnectSignal(res) {
++function requestCancellation(req, res) {
+     const ac = new AbortController();
+-    res.once("close", () => {
+-        if (!res.writableEnded)
+-            ac.abort();
+-    });
+-    return ac.signal;
++    const rawDeadline = req.headers['x-dsh-deadline-ms'];
++    const now = Date.now();
++    const deadline = typeof rawDeadline === 'string' && /^\d{10,16}$/.test(rawDeadline) && Number.isSafeInteger(Number(rawDeadline))
++        ? Math.min(Number(rawDeadline), now + 240_000) : now + 240_000;
++    const timer = setTimeout(() => ac.abort(new DOMException('The request budget expired.', 'TimeoutError')), Math.max(0, deadline - now));
++    timer.unref?.();
++    const close = () => { if (!res.writableEnded) ac.abort(); };
++    const aborted = () => ac.abort();
++    res.once('close', close);
++    req.once('aborted', aborted);
++    if (req.aborted || res.destroyed) ac.abort();
++    return { signal: ac.signal, dispose: () => { clearTimeout(timer); res.off('close', close); req.off('aborted', aborted); } };
++}
++function throwIfCancelled(signal) {
++    if (signal?.aborted) throw Object.assign(new Error('The browser request was cancelled before submission.'), { status: 499, code: 'adapter_request_cancelled', generationSubmitted: false });
+ }
+ function withStatus(err, status) {
+     return Object.assign(err, { statusCode: status });
+@@ -214,30 +267,44 @@
+     }
+     return undefined;
+ }
+-function readJson(req) {
++function readJson(req, signal) {
+     return new Promise((resolve, reject) => {
+         let size = 0;
+         const chunks = [];
+-        req.on("data", (c) => {
++        let settled = false;
++        const finish = (error, value) => {
++            if (settled) return;
++            settled = true;
++            clearTimeout(timer);
++            req.off('data', data); req.off('end', end); req.off('error', fail); req.off('aborted', abort);
++            signal?.removeEventListener('abort', abort);
++            if (error) reject(error); else resolve(value);
++        };
++        const fail = error => finish(error);
++        const abort = () => finish(Object.assign(new Error('Request upload was cancelled before submission.'), { status: 499, code: 'adapter_request_cancelled', generationSubmitted: false }));
++        const data = c => {
+             size += c.length;
+             if (size > MAX_BODY_BYTES) {
+-                reject(withStatus(new Error("request body too large"), 413));
++                finish(withStatus(new Error("request body too large"), 413));
+                 req.destroy();
+                 return;
+             }
+             chunks.push(c);
+-        });
+-        req.on("end", () => {
++        };
++        const end = () => {
+             if (!chunks.length)
+-                return resolve({});
++                return finish(null, {});
+             try {
+-                resolve(JSON.parse(Buffer.concat(chunks).toString("utf8")));
++                finish(null, JSON.parse(Buffer.concat(chunks).toString("utf8")));
+             }
+             catch {
+-                reject(withStatus(new Error("invalid JSON body"), 400));
+-            }
+-        });
+-        req.on("error", reject);
++                finish(withStatus(new Error("invalid JSON body"), 400));
++            }
++        };
++        const timer = setTimeout(() => finish(Object.assign(new Error('Request upload timed out before submission.'), { status: 408, code: 'adapter_body_timeout', generationSubmitted: false })), 30_000);
++        req.on('data', data); req.once('end', end); req.once('error', fail); req.once('aborted', abort);
++        signal?.addEventListener('abort', abort, { once: true });
++        if (signal?.aborted || req.aborted) abort();
+     });
+ }
+-//# sourceMappingURL=http.js.map
+\ No newline at end of file
++//# sourceMappingURL=http.js.map
+diff --git a/dist/translate.js b/dist/translate.js
+--- a/dist/translate.js
++++ b/dist/translate.js
+@@ -17,6 +17,12 @@
+     return String(content);
+ }
+ function effortFromRequest(body) {
++    if (body?.dsh_require_model_evidence === true) {
++        const exact = body.thinking_effort;
++        if (typeof exact !== "string" || !/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,99}$/.test(exact))
++            throw Object.assign(new Error("A reviewed exact web thinking effort is required."), { status: 400 });
++        return exact;
++    }
+     const r = body?.reasoning?.effort ?? body?.reasoning_effort ?? body?.thinking_effort;
+     if (r === "high" || r === "extended" || r === "max")
+         return "extended";

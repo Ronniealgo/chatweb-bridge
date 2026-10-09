@@ -1,0 +1,8 @@
+{
+  "name": "dsh-chat-tool-bridge-runtime",
+  "private": true,
+  "version": "0.1.0",
+  "dependencies": {
+    "@minzicat/pi-chatgpt-web-adapter": "0.1.1"
+  }
+}

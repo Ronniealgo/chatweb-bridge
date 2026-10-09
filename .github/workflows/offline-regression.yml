@@ -1,0 +1,21 @@
+name: Windows source and offline regression
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      # SOURCE-SHA256.json is generated, not tracked. Export before verification.
+      - name: Export allowlisted source into a fresh directory
+        shell: pwsh
+        run: node scripts/export-source.mjs "$env:RUNNER_TEMP/chatweb-source"
+      # Only installation downloads public locked packages. No account secrets.
+      - name: Install exported source and run contained Windows acceptance
+        shell: pwsh
+        working-directory: ${{ runner.temp }}/chatweb-source
+        run: ./scripts/accept-windows.ps1 -Install

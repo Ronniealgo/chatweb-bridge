@@ -1,0 +1,20 @@
+{
+  "package": "@minzicat/pi-chatgpt-web-adapter",
+  "version": "0.1.1",
+  "registryMetadataURL": "https://registry.npmjs.org/@minzicat%2fpi-chatgpt-web-adapter/0.1.1",
+  "tarball": "https://registry.npmjs.org/@minzicat/pi-chatgpt-web-adapter/-/pi-chatgpt-web-adapter-0.1.1.tgz",
+  "integrity": "sha512-ywEcDcSY+jBOz42z8W9WWN0ghPRRmnETVlzpARSAvy24GA9EXpySZEe6Q2sBPNIT+FIReFHfmR9CruJDQ1OxRg==",
+  "tarballSHA256": "e45e8e72a3296df14d36946941e0c7c7ec034fa2e0926e9dc78cc4be3aaad5a1",
+  "repository": {
+    "url": "git+https://github.com/minzique/dotfiles-agents.git",
+    "type": "git",
+    "directory": "packages/pi-chatgpt-web-adapter"
+  },
+  "declaredLicense": "MIT",
+  "registryMaintainer": "minzicat",
+  "gitCommit": "not supplied in version metadata",
+  "originalLicenseTextIncludedInTarball": false,
+  "copyrightHolder": "not verified; registry maintainer is not assumed to be the copyright holder",
+  "localChanges": "integrated experimental security/model-routing patch across 10 files; not deployed",
+  "auditDate": "2026-10-09"
+}

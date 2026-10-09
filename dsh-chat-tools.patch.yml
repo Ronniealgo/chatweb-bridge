@@ -1,0 +1,49 @@
+# DSH tool loop -> local text protocol bridge (:1457) -> pi-chatgpt-web adapter (:1456) -> ChatGPT web chat.
+# Used with: dsh --profile headless --patch dsh-chat-tools.patch.yml "<task>"   (run.ps1 does this)
+- id: llm-retry
+  disabled: true
+- id: llm-chatgpt-web
+  disabled: true
+# DSH asks the default model for a session title right after the first prompt. Through this
+# route that is a second chat message per session and it races the real request for the single
+# browser slot, so the title falls back to the first words of the prompt instead.
+- id: session-title-llm
+  disabled: true
+- id: llm-pi-ai
+  name: "@deepseek-ai/dsh-llm-pi-ai"
+  config:
+    providers:
+      chatgpt-chat-tools:
+        displayName: ChatGPT Chat + local tools
+        # Never replay a non-idempotent Chat generation after an uncertain send.
+        retryPolicy:
+          mode: normal
+          maxRetries: 0
+        api: openai-completions
+        baseURL: http://127.0.0.1:1457/v1
+        apiKeyEnv: PCW_LOCAL_KEY
+        models:
+          - id: gpt-5-6-thinking
+            name: GPT-5.6 Sol (Chat tools)
+            # The whole transcript travels as ONE ChatGPT message, and ChatGPT caps a message by
+            # characters (measured: gpt-5-6-thinking accepted 250k, rejected 420k; gpt-5-6 accepted
+            # 78k, rejected 100k). DSH estimates 4 characters per token and compacts when
+            # window - maxTokens - 65536 (its default headroom) is reached, so 140000 puts that at
+            # about 41k estimated tokens, roughly 165k characters, safely under the cap.
+            contextWindow: 140000
+            maxTokens: 32768
+            # The adapter treats the wire values high and max as ChatGPT's extended thinking; anything
+            # else (or off) is standard thinking. xhigh is sent as high because the adapter has no xhigh.
+            reasoningEfforts:
+              off:
+              low: low
+              medium: medium
+              high: high
+              xhigh: high
+              max: max
+- id: agent-default-model
+  name: "@deepseek-ai/dsh-agent-default-model"
+  config:
+    provider: chatgpt-chat-tools
+    model: gpt-5-6-thinking
+    reasoningEffort: high

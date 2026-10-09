@@ -1,0 +1,60 @@
+{
+  "schema": 1,
+  "project": "ChatWeb",
+  "version": "0.1.0-experimental.1",
+  "date": "2026-10-09",
+  "stage": "experimental-local-release-preparation",
+  "publication": {
+    "status": "on-hold",
+    "repositoryURL": null,
+    "uploaded": false,
+    "remaining": [
+      "matching upstream original notice or verifiable rights-holder authorization",
+      "actual GitHub repository URL"
+    ]
+  },
+  "originalLicense": {
+    "spdx": "MIT",
+    "copyright": "Copyright (c) 2026 うんけん",
+    "scope": "LICENSE-SCOPE.md",
+    "thirdPartyNoticesPreserved": true
+  },
+  "upstream": {
+    "package": "@minzicat/pi-chatgpt-web-adapter",
+    "version": "0.1.1",
+    "declaredLicense": "MIT",
+    "originalNoticeRecovered": false,
+    "redistributionConditionsConfirmed": false,
+    "infringementDetermination": false,
+    "copyrightHolder": "not verified; not guessed"
+  },
+  "acceptance": {
+    "existingWebChatTask": "confirmed complete by maintainer on 2026-10-09",
+    "repeatRequiredForThisDocumentationRelease": false,
+    "baselineOfflineTests": 427,
+    "baselineOfflineTestsBasis": "Executed baseline runner summary; parameterized cases expand at runtime. Not rerun for this documentation-only release.",
+    "baselineReconstructedRuntimeFiles": 42,
+    "externalMachineVerified": false,
+    "hostedCiExecuted": false
+  },
+  "privacy": {
+    "auditedBaseArtifact": "ChatWeb-MIT-local-review-20261009.zip",
+    "auditedBaseSHA256": "bf358531754eb8a209d66bc716c19fc140a3371745085dac8164f4ac26e4a4c4",
+    "auditedBaseHashScope": "SHA256 of the entire previously audited ZIP, not SOURCE-SHA256.json or this version. Baseline evidence is retained outside this distribution.",
+    "scope": "unchanged files match audited base; changed documentation and release metadata receive focused review; final file list is release-files.json"
+  },
+  "security": {
+    "defaultListenHost": "127.0.0.1",
+    "lanOrPublicExposureSupported": false,
+    "newCredentialsDeployedThisRound": false,
+    "securityChecksRemoved": false
+  },
+  "support": {
+    "Codex": false,
+    "GPT6": false,
+    "GPT6Pro": false,
+    "officialSupport": false,
+    "unlimitedQuota": false
+  },
+  "scope": "documentation and release metadata only; runtime source, dependency resolution and model configuration unchanged"
+}

@@ -1,0 +1,155 @@
+{
+  "schema": 1,
+  "upstream": {
+    "package": "@minzicat/pi-chatgpt-web-adapter",
+    "version": "0.1.1",
+    "tarball": "https://registry.npmjs.org/@minzicat/pi-chatgpt-web-adapter/-/pi-chatgpt-web-adapter-0.1.1.tgz",
+    "integrity": "sha512-ywEcDcSY+jBOz42z8W9WWN0ghPRRmnETVlzpARSAvy24GA9EXpySZEe6Q2sBPNIT+FIReFHfmR9CruJDQ1OxRg==",
+    "tarballSHA256": "e45e8e72a3296df14d36946941e0c7c7ec034fa2e0926e9dc78cc4be3aaad5a1",
+    "repository": {
+      "url": "git+https://github.com/minzique/dotfiles-agents.git",
+      "type": "git",
+      "directory": "packages/pi-chatgpt-web-adapter"
+    },
+    "declaredLicense": "MIT"
+  },
+  "patch": {
+    "file": "patches/adapter-0.1.1-to-runtime-v4.patch",
+    "sha256": "ffd6b061c9fe4b54bce2020a4467dcf47f07aca5594beec1bff8d5724bc71834"
+  },
+  "inputFiles": {
+    "CHANGELOG.md": "d403131e0100fe757e6cd2a4dae6a0764f155a3f5262d172574b7fe268743b22",
+    "README.md": "f9610bf3b6136b5e4932743f68117f5148bfc9e2be86a63c9867aea73fe979dd",
+    "bin/pi-chatgpt-web.mjs": "08eeb69a4e879699bbf0fafee62a63e33126ae745422eda293cc4d83577fd3b3",
+    "dist/auth/jwt.js": "b2334899039308019a3550385cfb15d7c56adc24d556fefdc9d5b194f870f9c1",
+    "dist/auth/jwt.js.map": "ae71eff613b2701926c16454d605d0cd01d81bb2ad52e2948c0aa89d695d5db5",
+    "dist/auth/login.js": "c28a244cd4c91210b07c443f838ce639138220e46e452314de5eeb3947cffd1f",
+    "dist/auth/login.js.map": "c7f80b3436e469f1c96d16ee2e347e6636e4002afa6a23ce3a985e65b0281967",
+    "dist/auth/refresh.js": "36ab59a781eb6e3a3a3c06f0c239099b299be5337a15cd6d1872069abf8dcced",
+    "dist/auth/refresh.js.map": "d3700457ecc9342e394e9773898a83e1c7870187973613d1920ba0de2d408d8a",
+    "dist/auth/store.js": "4ab632f4decad778d9f7ab4efac43ea9dffb17e9a373a2a048491ea61828dcaf",
+    "dist/auth/store.js.map": "c6321a6cd62f90952acbcfc6588156b6b8612c556a90cfa31dae41bbd5cf26c7",
+    "dist/browser/chrome-path.js": "e10ec0ee0d9524681435515791e107441ad13e290ee23f53b077bce6e4819802",
+    "dist/browser/chrome-path.js.map": "a89258e99db1c2e226c0f55e020534dfab28353e9f34dc210939a1b6fe9074a2",
+    "dist/browser/hooks.js": "d361334f6eab28e3b0127c871984ecd1ffa43e853df131a57ba6f2efb2a65bd7",
+    "dist/browser/hooks.js.map": "f5844c37fe1ef70a7a105adff366668a136866aebfb42fcb51c95e3084476b7f",
+    "dist/browser/supervisor.js": "db74b1714e2d5e6b8ca3365b1c05e75c33347a489d569878f08ba4b92e7f6d4a",
+    "dist/browser/supervisor.js.map": "2094cdf9faf365288b47d6a7ee413dc10af163fe890d875e0d342262a7f11b6d",
+    "dist/chat/conversation.js": "40c054c9112d8beaeab7057237e21bc9bbd2999c46f9ee5c2206379465442c4a",
+    "dist/chat/conversation.js.map": "b5a061cb640f57cd164589e1bc4a84bd69cb9d3c6dcd3fb31f438c486e2cb8e7",
+    "dist/chat/sse-reassembler.js": "329b1e05ba0d244b7892d6a1742b6ca8dad94e81dfbc078fb665f77a499f6d24",
+    "dist/chat/sse-reassembler.js.map": "c8818c7e4bd33f84d5b59ab6ff673063bcdf715be44bf73c0c3cafa2354a7e52",
+    "dist/cli/index.js": "5aa50d9cdc82e934ecea8f930d9d709a46a3feb6ca6d3680ac7760466f4a2f09",
+    "dist/cli/index.js.map": "4b28312741d153296a2b97f2e7dc32f9a0ae5193f182953c05eca43d425dbf97",
+    "dist/constants.js": "dac3136b1465bce256de32fc874d31057dc8fab66f4c089676403e8ee66e5a0f",
+    "dist/constants.js.map": "714812c83afc09766caad0ad50dcf056098a99cd4942627873757dbf0c796775",
+    "dist/log.js": "fefe5381858ed160205b6f1f8a1b3fc8b5d327c840301dcacc32f964f5fcb867",
+    "dist/log.js.map": "73b4192eb9596524a9cd86f9eebf1aed7712788b4be1752de0705738d9753647",
+    "dist/server/http.js": "86fc4e451e65d91b989acc2162e8a7a2b82bc48765d71d53465f3b651a46fdc7",
+    "dist/server/http.js.map": "d3a77bb96d512f3964b81e2491b9517ca2e2ace43e9b9c937f2ea3fcd52d709c",
+    "dist/server/launch-agent.js": "9dd988d12860ff353ade9dfd4125c5e2ef6fb182ef25b26faa946d6bef8c4204",
+    "dist/server/launch-agent.js.map": "460a5d28f0443abfb711e29d64f2252e696bed3bb366f8afdc08516ddb9120d5",
+    "dist/server/runtime.js": "acf41e61a9179f8312f4c0ebc3af7ddfc19be82f03caf4253dbccff843450de3",
+    "dist/server/runtime.js.map": "92d6f3e90b617db8f533f788541b05f93f86bed42cc175aafafe7e379e4d0631",
+    "dist/translate.js": "16af10d079050040915911b846246dd6f6002dedc022ee28d374d1170bffb746",
+    "dist/translate.js.map": "5db64b1b99ca90a3442a3cee1d952f3a1d157763d11a5e15737755a32161e2d7",
+    "docs/ARCHITECTURE.md": "0ed0f9a986a929a89fee3a36752943dd5daa03d7e0402a0c52b3f86f6c8257b3",
+    "docs/TOS-NOTES.md": "fa42148918c824aab942b4bf64eca973be4d8fa676045e31f94a187c5e6df809",
+    "extensions/index.ts": "86457f9b05314881366574306a9bedb266eec179513b452dea18e78ad2a3bb0a",
+    "package.json": "eb8ed565ccd9b493a925be5dff48ea69397c51ce3f093e3b37b7fb797b3fad29"
+  },
+  "outputFiles": {
+    "CHANGELOG.md": "d403131e0100fe757e6cd2a4dae6a0764f155a3f5262d172574b7fe268743b22",
+    "README.md": "f9610bf3b6136b5e4932743f68117f5148bfc9e2be86a63c9867aea73fe979dd",
+    "bin/pi-chatgpt-web.mjs": "08eeb69a4e879699bbf0fafee62a63e33126ae745422eda293cc4d83577fd3b3",
+    "dist/auth/jwt.js": "b2334899039308019a3550385cfb15d7c56adc24d556fefdc9d5b194f870f9c1",
+    "dist/auth/jwt.js.map": "ae71eff613b2701926c16454d605d0cd01d81bb2ad52e2948c0aa89d695d5db5",
+    "dist/auth/login.js": "c28a244cd4c91210b07c443f838ce639138220e46e452314de5eeb3947cffd1f",
+    "dist/auth/login.js.map": "c7f80b3436e469f1c96d16ee2e347e6636e4002afa6a23ce3a985e65b0281967",
+    "dist/auth/refresh.js": "53410400c691d2c720ec1bdc33250082585aa4fec5efc1dbe40d171087755d56",
+    "dist/auth/refresh.js.map": "d3700457ecc9342e394e9773898a83e1c7870187973613d1920ba0de2d408d8a",
+    "dist/auth/store.js": "4ab632f4decad778d9f7ab4efac43ea9dffb17e9a373a2a048491ea61828dcaf",
+    "dist/auth/store.js.map": "c6321a6cd62f90952acbcfc6588156b6b8612c556a90cfa31dae41bbd5cf26c7",
+    "dist/browser/chrome-path.js": "e10ec0ee0d9524681435515791e107441ad13e290ee23f53b077bce6e4819802",
+    "dist/browser/chrome-path.js.map": "a89258e99db1c2e226c0f55e020534dfab28353e9f34dc210939a1b6fe9074a2",
+    "dist/browser/composer.js": "290cb8ff0c62ffd90cf3f0b6ce1112669a2a190aad2807b2a5ff33d2fea755f2",
+    "dist/browser/hooks.js": "d361334f6eab28e3b0127c871984ecd1ffa43e853df131a57ba6f2efb2a65bd7",
+    "dist/browser/hooks.js.map": "f5844c37fe1ef70a7a105adff366668a136866aebfb42fcb51c95e3084476b7f",
+    "dist/browser/operations.js": "b00806709a237c0af4e8208e2ac18fbc0e289f26b7f7588f496dbc4353d2c677",
+    "dist/browser/supervisor.js": "25569348f72199a16622256fa695a5781b68c0f24ca96824cd6fedca28c62510",
+    "dist/browser/supervisor.js.map": "2094cdf9faf365288b47d6a7ee413dc10af163fe890d875e0d342262a7f11b6d",
+    "dist/chat/conversation.js": "1242abb754d66df8dc0bc3826c29e2ead0060b1539de957bedd8ef97630b2d5f",
+    "dist/chat/conversation.js.map": "b5a061cb640f57cd164589e1bc4a84bd69cb9d3c6dcd3fb31f438c486e2cb8e7",
+    "dist/chat/sse-reassembler.js": "a063d7e465d414da7cbc50069e506ab143eecbcb99a759c58319080ca10136cb",
+    "dist/chat/sse-reassembler.js.map": "c8818c7e4bd33f84d5b59ab6ff673063bcdf715be44bf73c0c3cafa2354a7e52",
+    "dist/chat/submission.js": "5c156d8b4229a471f5dad90bc436304ecb5c41870ddf66c3a05922953be578e4",
+    "dist/cli/index.js": "5aa50d9cdc82e934ecea8f930d9d709a46a3feb6ca6d3680ac7760466f4a2f09",
+    "dist/cli/index.js.map": "4b28312741d153296a2b97f2e7dc32f9a0ae5193f182953c05eca43d425dbf97",
+    "dist/constants.js": "dac3136b1465bce256de32fc874d31057dc8fab66f4c089676403e8ee66e5a0f",
+    "dist/constants.js.map": "714812c83afc09766caad0ad50dcf056098a99cd4942627873757dbf0c796775",
+    "dist/log.js": "78b9d4abc62ddf790801bea0d0899e0b37a9dbc2c8c86f63e077c9f5920fe7d9",
+    "dist/log.js.map": "73b4192eb9596524a9cd86f9eebf1aed7712788b4be1752de0705738d9753647",
+    "dist/server/http.js": "ba5d23c80e029ba065b41ec83e5086eb17ec2361a1e75fdd6690d54c57c6973e",
+    "dist/server/http.js.map": "d3a77bb96d512f3964b81e2491b9517ca2e2ace43e9b9c937f2ea3fcd52d709c",
+    "dist/server/launch-agent.js": "9dd988d12860ff353ade9dfd4125c5e2ef6fb182ef25b26faa946d6bef8c4204",
+    "dist/server/launch-agent.js.map": "460a5d28f0443abfb711e29d64f2252e696bed3bb366f8afdc08516ddb9120d5",
+    "dist/server/runtime.js": "acf41e61a9179f8312f4c0ebc3af7ddfc19be82f03caf4253dbccff843450de3",
+    "dist/server/runtime.js.map": "92d6f3e90b617db8f533f788541b05f93f86bed42cc175aafafe7e379e4d0631",
+    "dist/translate.js": "084ac4fd5edcac3df302d2a3b48e99b8920f6cb18b768460502224ce1d1d8830",
+    "dist/translate.js.map": "5db64b1b99ca90a3442a3cee1d952f3a1d157763d11a5e15737755a32161e2d7",
+    "docs/ARCHITECTURE.md": "0ed0f9a986a929a89fee3a36752943dd5daa03d7e0402a0c52b3f86f6c8257b3",
+    "docs/TOS-NOTES.md": "fa42148918c824aab942b4bf64eca973be4d8fa676045e31f94a187c5e6df809",
+    "extensions/index.ts": "86457f9b05314881366574306a9bedb266eec179513b452dea18e78ad2a3bb0a",
+    "package.json": "eb8ed565ccd9b493a925be5dff48ea69397c51ce3f093e3b37b7fb797b3fad29"
+  },
+  "changes": [
+    {
+      "path": "dist/auth/refresh.js",
+      "beforeSHA256": "36ab59a781eb6e3a3a3c06f0c239099b299be5337a15cd6d1872069abf8dcced",
+      "afterSHA256": "53410400c691d2c720ec1bdc33250082585aa4fec5efc1dbe40d171087755d56"
+    },
+    {
+      "path": "dist/browser/composer.js",
+      "beforeSHA256": null,
+      "afterSHA256": "290cb8ff0c62ffd90cf3f0b6ce1112669a2a190aad2807b2a5ff33d2fea755f2"
+    },
+    {
+      "path": "dist/browser/operations.js",
+      "beforeSHA256": null,
+      "afterSHA256": "b00806709a237c0af4e8208e2ac18fbc0e289f26b7f7588f496dbc4353d2c677"
+    },
+    {
+      "path": "dist/browser/supervisor.js",
+      "beforeSHA256": "db74b1714e2d5e6b8ca3365b1c05e75c33347a489d569878f08ba4b92e7f6d4a",
+      "afterSHA256": "25569348f72199a16622256fa695a5781b68c0f24ca96824cd6fedca28c62510"
+    },
+    {
+      "path": "dist/chat/conversation.js",
+      "beforeSHA256": "40c054c9112d8beaeab7057237e21bc9bbd2999c46f9ee5c2206379465442c4a",
+      "afterSHA256": "ca90f6ab638be946eda42638e9987ffcd8cb1941711654caf8244be9c73228b4"
+    },
+    {
+      "path": "dist/chat/sse-reassembler.js",
+      "beforeSHA256": "329b1e05ba0d244b7892d6a1742b6ca8dad94e81dfbc078fb665f77a499f6d24",
+      "afterSHA256": "a063d7e465d414da7cbc50069e506ab143eecbcb99a759c58319080ca10136cb"
+    },
+    {
+      "path": "dist/chat/submission.js",
+      "beforeSHA256": null,
+      "afterSHA256": "5c156d8b4229a471f5dad90bc436304ecb5c41870ddf66c3a05922953be578e4"
+    },
+    {
+      "path": "dist/server/http.js",
+      "beforeSHA256": "86fc4e451e65d91b989acc2162e8a7a2b82bc48765d71d53465f3b651a46fdc7",
+      "afterSHA256": "8d28f27ac7e6cc9608caa3e1b3c6ee6804070b66aba079914447746907902fcf"
+    },
+    {
+      "path": "dist/translate.js",
+      "beforeSHA256": "16af10d079050040915911b846246dd6f6002dedc022ee28d374d1170bffb746",
+      "afterSHA256": "084ac4fd5edcac3df302d2a3b48e99b8920f6cb18b768460502224ce1d1d8830"
+    }
+  ],
+  "sourceForm": "maintained JavaScript diff against published compiled package; no claim of TypeScript build reproducibility",
+  "runtimeBaseline": "browser-disconnect-fix-20261009-v4 + isolated model-routing candidate (not deployed)",
+  "licenseVerification": "upstream metadata declares MIT; original copyright notice not recovered"
+}
