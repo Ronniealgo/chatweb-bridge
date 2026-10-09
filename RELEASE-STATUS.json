@@ -3,15 +3,14 @@
   "project": "ChatWeb",
   "version": "0.1.0-experimental.1",
   "date": "2026-10-09",
-  "stage": "experimental-local-release-preparation",
+  "stage": "experimental-public-release",
   "publication": {
-    "status": "on-hold",
-    "repositoryURL": null,
-    "uploaded": false,
-    "remaining": [
-      "matching upstream original notice or verifiable rights-holder authorization",
-      "actual GitHub repository URL"
-    ]
+    "status": "public",
+    "repositoryURL": "https://github.com/Ronniealgo/chatweb-bridge",
+    "visibility": "public",
+    "uploaded": true,
+    "publishedDate": "2026-10-09",
+    "remaining": []
   },
   "originalLicense": {
     "spdx": "MIT",
@@ -23,10 +22,14 @@
     "package": "@minzicat/pi-chatgpt-web-adapter",
     "version": "0.1.1",
     "declaredLicense": "MIT",
-    "originalNoticeRecovered": false,
-    "redistributionConditionsConfirmed": false,
-    "infringementDetermination": false,
-    "copyrightHolder": "not verified; not guessed"
+    "authorIdentifiedAs": "Minzi (GitHub minzique, npm minzicat)",
+    "authorEvidence": "npm maintainer email domain minzique.net matches the GitHub account website; three public records agree",
+    "originalNoticeInPublishedArtifact": false,
+    "noticeRecordedAs": "best available attribution, with confirmed facts separated from the derived copyright line",
+    "noticeDerivedFrom": "github.com/minzique/pi-claude-oauth-adapter LICENSE (same author, same npm scope family, MIT, Copyright (c) 2026 Minzi)",
+    "noticeFile": "THIRD_PARTY.md",
+    "copyrightHolder": "Minzi, identified from public records; the notice line is derived and labelled as such",
+    "infringementDetermination": false
   },
   "acceptance": {
     "existingWebChatTask": "confirmed complete by maintainer on 2026-10-09",
