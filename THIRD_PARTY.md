@@ -81,3 +81,77 @@ this combined source remains on hold pending matching notice/authorization.
 Project live-task acceptance has since been confirmed by the maintainer; the
 older deployment wording above records the source-preparation history and is
 not a request to repeat that acceptance. New credential deployment remains deferred.
+
+## Upstream author identification and notice recovery (2026-10-09 follow-up)
+
+Further public-source investigation. No contact was made with the author, and no
+credential or private data was used beyond this project owner’s own GitHub login.
+
+### Author identity, cross-checked from three independent public records
+
+| Record | Value |
+| --- | --- |
+| npm maintainer of the package | `minzicat`, email `minzi@minzique.net` |
+| GitHub user | `minzique` — display name "Minzi", website `minzique.net` |
+| npm publishing scope | `@minzicat` (the author’s own scope) |
+
+The npm email domain and the GitHub account website match, so the package author
+and the GitHub account are the same person. The declared repository
+`github.com/minzique/dotfiles-agents` no longer resolves (404), and the adapter is
+not present in the author’s current public repositories, so the package’s own
+LICENSE file could not be retrieved.
+
+### Best available original copyright evidence
+
+A different package by the **same author**, in the same npm scope family and also
+published under MIT, carries an explicit original notice:
+
+    minzique/pi-claude-oauth-adapter/LICENSE
+    MIT License
+    Copyright (c) 2026 Minzi
+
+Source: `https://api.github.com/repos/minzique/pi-claude-oauth-adapter/license`
+
+### What is confirmed and what is derived
+
+- **Confirmed:** `@minzicat/pi-chatgpt-web-adapter` declares MIT in its published
+  package metadata and README. The published 0.1.0 and 0.1.1 artifacts contain no
+  standalone copyright or license text file. Both artifacts were re-fetched in this
+  audit and their registry integrity was matched.
+- **Confirmed:** the package author is Minzi (GitHub `minzique`, npm `minzicat`).
+- **Derived, not verified against the 0.1.1 artifact:** the copyright line
+  `Copyright (c) 2026 Minzi` comes from the same author’s other MIT project. It is
+  recorded here as the best available attribution for that author’s 2026 work, not as
+  text extracted from the 0.1.1 tarball.
+
+No copyright holder has been invented. If the author supplies a different, or more
+specific, notice for 0.1.1, it will be reproduced verbatim here and the derived line
+above will be removed.
+
+### Upstream MIT notice preserved by this project
+
+    MIT License
+
+    Copyright (c) 2026 Minzi
+
+    Permission is hereby granted, free of charge, to any person obtaining a copy
+    of this software and associated documentation files (the "Software"), to deal
+    in the Software without restriction, including without limitation the rights
+    to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+    copies of the Software, and to permit persons to whom the Software is
+    furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included in all
+    copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+    AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+    SOFTWARE.
+
+This notice covers the upstream portions only. The project’s own original
+contributions remain under their separate MIT grant recorded in LICENSE and
+LICENSE-SCOPE.md; neither grant replaces the other.
