@@ -3,6 +3,9 @@ const fetch = authFetch(externalToken);
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { createBridge } from '../server.mjs';
 
 const tool = { type: 'function', function: { name: 'read_file', parameters: {
@@ -279,4 +282,53 @@ test('remote, credential-bearing, non-HTTP and path-bearing upstreams are reject
   for (const upstream of ['https://127.0.0.1', 'http://example.test', 'http://127.0.0.2', 'http://u:p@127.0.0.1', 'http://127.0.0.1/v1']) {
     assert.throws(() => createBridge({ ...bridgeAuth, upstream }), /loopback HTTP origin/);
   }
+});
+
+// --- image attachments (local feature) ---------------------------------------
+const tinyPng = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
+
+test('image parts reach the upstream as temp files with markers and are cleaned up', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'pcw-img-srv-'));
+  process.env.PCW_UPLOAD_DIR = dir;
+  t.after(() => { delete process.env.PCW_UPLOAD_DIR; rmSync(dir, { recursive: true, force: true }); });
+  const seen = {};
+  const f = await fixture(t, async (_url, init) => {
+    const body = JSON.parse(init.body);
+    seen.body = body;
+    seen.duringCall = existsSync(body.images[0].path) ? readFileSync(body.images[0].path) : null;
+    return upstreamReply(body, { content: 'seen the image' });
+  });
+  const response = await f.post(request({ messages: [{ role: 'user', content: [
+    { type: 'image_url', image_url: { url: `data:image/png;base64,${tinyPng.toString('base64')}` } },
+    { type: 'text', text: '图里第一行字是什么' },
+  ] }] }));
+  assert.equal(response.status, 200);
+  assert.deepEqual(seen.duringCall, tinyPng, 'the adapter reads the exact bytes while the upstream call runs');
+  const image = seen.body.images[0];
+  assert.equal(image.media_type, 'image/png');
+  assert.equal(image.name, 'image-1.png');
+  assert.match(image.path, /pcw-img-[0-9a-f-]+\.png$/);
+  const transcript = JSON.parse(seen.body.messages[1].content).conversation;
+  assert.equal(transcript[0].content, `[图片 #1]\n图里第一行字是什么`);
+  assert.match(seen.body.messages[0].content, /image file is attached/);
+  assert.equal(existsSync(image.path), false, 'temp file is deleted once the turn settles');
+  const health = await (await fetch(`${f.base}/health`)).json();
+  assert.equal(health.failed, 0);
+  assert.equal(health.completed, 1);
+});
+
+test('remote image URLs and oversized bodies never reach the upstream', async t => {
+  let calls = 0;
+  const f = await fixture(t, async () => { calls++; });
+  const rejected = await f.post(request({ messages: [{ role: 'user', content: [
+    { type: 'image_url', image_url: { url: 'https://example.test/pic.png' } }, { type: 'text', text: 'x' }] }] }));
+  assert.equal(rejected.status, 400);
+  assert.equal((await rejected.json()).error.code, 'invalid_request');
+  assert.equal(calls, 0);
+  // 33 MiB body exceeds the raised cap (32 MiB) even though each image stays under 20 MiB.
+  const big = Buffer.alloc(33 * 1024 * 1024, 7).toString('base64');
+  const huge = await f.post(request({ messages: [{ role: 'user', content: [
+    { type: 'image_url', image_url: { url: `data:image/png;base64,${big}` } }, { type: 'text', text: 'x' }] }] }));
+  assert.equal(huge.status, 413);
+  assert.equal(calls, 0);
 });

@@ -5,7 +5,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { protocolFailureSample, saveFailureSample, safeTransportDetails } from './diagnostics.mjs';
-import { BridgeError, prepareRequest, parseModelReply, completion, completionSSE } from './protocol.mjs';
+import { BridgeError, prepareRequest, parseModelReply, completion, completionSSE, sweepStaleUploads } from './protocol.mjs';
 import { responsesRequest, responsesResult, responsesSSE } from './responses.mjs';
 import { loadModelRegistry, applyModelRoute, verifyModelResult } from './model-routes.mjs';
 import { SecurityError, authorizeLocalRequest, readServiceToken, requireIndependentTokens, requireServiceToken } from './http-security.mjs';
@@ -23,7 +23,7 @@ export function createBridge({ upstream = 'http://127.0.0.1:1456', timeoutMs = 2
   const counters = { requests: 0, completed: 0, toolRounds: 0, failed: 0 };
   const json = (res, status, value) => { res.writeHead(status, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify(value)); };
   return createServer(async (req, res) => {
-    let acquired = false, fingerprint;
+    let acquired = false, fingerprint, cleanupUploads = null;
     const requestId = randomUUID();
     res.setHeader('x-dsh-request-id', requestId);
     const ac = new AbortController();
@@ -32,7 +32,7 @@ export function createBridge({ upstream = 'http://127.0.0.1:1456', timeoutMs = 2
       const authenticated = authorizeLocalRequest(req, externalToken);
       if (!authenticated) return json(res, 200, { service: 'dsh-chat-tool-bridge', status: 'ok' });
       requireServiceToken(upstreamToken);
-      if (req.method === 'GET' && req.url === '/health') return json(res, 200, { service: 'dsh-chat-tool-bridge', status: 'ok', security: 'service-bearer-v1', revision: 'submission-lifecycle-20261006', upstream: origin.origin, busy, ...counters });
+      if (req.method === 'GET' && req.url === '/health') return json(res, 200, { service: 'dsh-chat-tool-bridge', status: 'ok', security: 'service-bearer-v1', revision: 'image-input-20261010', upstream: origin.origin, busy, ...counters });
       if (req.method === 'GET' && req.url === '/v1/models') return json(res, 200, { object: 'list', data: modelRegistry.catalog() });
       const isResponses = req.url === '/v1/responses';
       if (req.method !== 'POST' || (!isResponses && req.url !== '/v1/chat/completions')) throw new BridgeError('Use POST /v1/chat/completions or /v1/responses.', 404);
@@ -41,7 +41,10 @@ export function createBridge({ upstream = 'http://127.0.0.1:1456', timeoutMs = 2
       let size = 0; const parts = [];
       for await (const part of req) {
         size += part.length;
-        if (size > 8*1024*1024) throw new BridgeError('Request too large.', 413);
+        // 32 MiB: base64 image data URLs inflate ~4/3x; DSH sends up to 8 images
+        // of ~1 MiB each plus the full transcript, and this bridge forwards the
+        // decoded bytes to the adapter as temp file paths.
+        if (size > 32*1024*1024) throw new BridgeError('Request too large.', 413);
         parts.push(part);
       }
       let body;
@@ -54,7 +57,9 @@ export function createBridge({ upstream = 'http://127.0.0.1:1456', timeoutMs = 2
       if (previous) failures.delete(fingerprint);
       const translated = isResponses ? responsesRequest(body) : null;
       const chatBody = translated?.body ?? body;
-      const { upstreamBody, context } = prepareRequest(chatBody);
+      const prepared = prepareRequest(chatBody);
+      const { upstreamBody, context } = prepared;
+      cleanupUploads = prepared.cleanup;
       const modelRoute = modelRegistry.route(chatBody);
       applyModelRoute(upstreamBody, modelRoute);
       logger.info(JSON.stringify({ timestamp: new Date().toISOString(), requestId, event: 'request', model: body.model, upstreamModel: chatBody.model, api: isResponses ? 'responses' : 'chat-completions', tools: [...context.validators.keys()], messageCount: chatBody.messages.length }));
@@ -133,11 +138,15 @@ export function createBridge({ upstream = 'http://127.0.0.1:1456', timeoutMs = 2
       else res.end();
     } finally {
       if (acquired) busy = false;
+      // Image temp files are consumed by the adapter during the upstream call;
+      // delete them whatever happened (abort leaves the sweep to finish the job).
+      cleanupUploads?.();
     }
   });
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  try { const swept = sweepStaleUploads(); if (swept) console.log(`swept ${swept} stale image upload${swept === 1 ? '' : 's'}`); } catch { /* best effort */ }
   const port = Number(process.env.DSH_CHAT_TOOL_PORT ?? 1457);
   const externalToken = requireServiceToken(readServiceToken('DSH_CHAT_API_TOKEN'));
   const upstreamToken = requireServiceToken(readServiceToken('PCW_INTERNAL_TOKEN'));

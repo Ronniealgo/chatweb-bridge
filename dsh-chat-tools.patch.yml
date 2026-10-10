@@ -25,6 +25,11 @@
         models:
           - id: gpt-5-6-thinking
             name: GPT-5.6 Sol (Chat tools)
+            # The web chat accepts image input end to end (DSH read_image/user
+            # pictures travel through the local bridge as page-context uploads).
+            input:
+              - text
+              - image
             # The whole transcript travels as ONE ChatGPT message, and ChatGPT caps a message by
             # characters (measured: gpt-5-6-thinking accepted 250k, rejected 420k; gpt-5-6 accepted
             # 78k, rejected 100k). DSH estimates 4 characters per token and compacts when
@@ -41,6 +46,18 @@
               high: high
               xhigh: high
               max: max
+          - id: gpt-5-6
+            name: GPT-5.6 (Chat tools)
+            # Same image pipeline as the thinking route.
+            input:
+              - text
+              - image
+            # Measured 78k chars accepted / 100k rejected; window - maxTokens - 65536 headroom
+            # keeps DSH's estimated transcript under that cap (93k - 8k - 64k = ~21k est. tokens).
+            contextWindow: 93000
+            maxTokens: 8192
+            # Non-thinking route: no reasoning-effort control is offered.
+            reasoningEfforts: false
 - id: agent-default-model
   name: "@deepseek-ai/dsh-agent-default-model"
   config:

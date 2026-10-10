@@ -1,4 +1,7 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { mkdirSync, readdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import Ajv from 'ajv';
 
 export class BridgeError extends Error {
@@ -8,15 +11,74 @@ export class BridgeError extends Error {
 }
 const fail = (message) => { throw new BridgeError(message); };
 const object = x => x !== null && typeof x === 'object' && !Array.isArray(x);
-function textContent(content) {
+// --- Image attachments (local feature) ---------------------------------------
+// Only base64 data URLs are accepted; http(s) image URLs are rejected because the
+// bridge must never fetch remote content on the harness's behalf. Collected
+// images are deduplicated by content hash, written to temp files after all
+// validation passed, uploaded by the adapter, then deleted by the server finally
+// block (startup sweep removes leftovers from crashes).
+const IMAGE_TYPES = { 'image/png': '.png', 'image/jpeg': '.jpg', 'image/webp': '.webp', 'image/gif': '.gif' };
+const MAX_IMAGES_PER_REQUEST = 8;
+const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
+const DATA_URL_RE = /^data:(image\/(?:png|jpeg|webp|gif));base64,([A-Za-z0-9+/=\s]+)$/;
+export const uploadsRoot = () => process.env.PCW_UPLOAD_DIR || join(dirname(fileURLToPath(import.meta.url)), '.runtime', 'uploads');
+
+function imageMarker(url, registry, where) {
+  const match = DATA_URL_RE.exec(url);
+  if (!match) fail(`${where}: only base64 data-URL images (image/png, image/jpeg, image/webp, image/gif) are supported; http(s) image URLs are not.`);
+  const bytes = Buffer.from(match[2].replace(/\s+/g, ''), 'base64');
+  if (!bytes.length) fail(`${where}: image data URL carries no bytes.`);
+  if (bytes.length > MAX_IMAGE_BYTES) fail(`${where}: image exceeds the 20 MiB per-image limit.`);
+  const hash = createHash('sha256').update(bytes).digest('hex');
+  const seen = registry.byHash.get(hash);
+  if (seen) return `[图片 #${seen}]`;
+  registry.entries.push({ bytes, mediaType: match[1], hash });
+  const marker = registry.entries.length;
+  registry.byHash.set(hash, marker);
+  if (marker > MAX_IMAGES_PER_REQUEST) fail(`${where}: at most ${MAX_IMAGES_PER_REQUEST} images per request.`);
+  return `[图片 #${marker}]`;
+}
+
+function contentText(content, registry, where) {
   if (content == null) return '';
   if (typeof content === 'string') return content;
-  if (!Array.isArray(content)) fail('Only text message content is supported.');
-  return content.map(p => {
-    if (!object(p) || p.type !== 'text' || typeof p.text !== 'string')
-      fail('Images, audio and non-text message parts are unsupported.');
-    return p.text;
+  if (!Array.isArray(content)) fail(`Only text and image message content is supported (${where}).`);
+  return content.map((part, index) => {
+    const label = `${where} part ${index}`;
+    if (!object(part)) fail(`Only text and image message parts are supported (${label}).`);
+    if (part.type === 'text') {
+      if (typeof part.text !== 'string') fail(`Text parts must carry string text (${label}).`);
+      return part.text;
+    }
+    if (part.type === 'image_url') return imageMarker(part.image_url?.url, registry, label);
+    if (part.type === 'input_image') return imageMarker(part.image_url ?? part.url, registry, label);
+    fail(`Audio and other non-text message parts are unsupported (${label}).`);
   }).join('\n');
+}
+
+function writeImageFiles(registry) {
+  if (!registry.entries.length) return { images: [], cleanup: null };
+  const dir = uploadsRoot();
+  mkdirSync(dir, { recursive: true });
+  const images = registry.entries.map((entry, index) => {
+    const path = join(dir, `pcw-img-${randomUUID()}${IMAGE_TYPES[entry.mediaType]}`);
+    writeFileSync(path, entry.bytes);
+    return { path, media_type: entry.mediaType, name: `image-${index + 1}${IMAGE_TYPES[entry.mediaType]}` };
+  });
+  const cleanup = () => { for (const image of images) { try { unlinkSync(image.path); } catch { /* gone or still open on abort; the sweep handles leftovers */ } } };
+  return { images, cleanup };
+}
+
+export function sweepStaleUploads(maxAgeMs = 24 * 60 * 60 * 1000, nowMs = Date.now()) {
+  const dir = uploadsRoot();
+  let names;
+  try { names = readdirSync(dir); } catch { return 0; }
+  let removed = 0;
+  for (const name of names) {
+    if (!name.startsWith('pcw-img-')) continue;
+    try { if (nowMs - statSync(join(dir, name)).mtimeMs > maxAgeMs) { unlinkSync(join(dir, name)); removed += 1; } } catch { /* racing writer */ }
+  }
+  return removed;
 }
 
 export function prepareRequest(body) {
@@ -49,9 +111,10 @@ export function prepareRequest(body) {
     if (!validators.has(forcedName)) fail('tool_choice references an unknown tool.');
   } else if (!['auto', 'none', 'required'].includes(choice)) fail('Unsupported tool_choice.');
   if (choice === 'required' && tools.length === 0) fail('tool_choice=required needs tools.');
-  const history = body.messages.map(m => {
+  const registry = { entries: [], byHash: new Map() };
+  const history = body.messages.map((m, index) => {
     if (!object(m) || !['system','developer','user','assistant','tool'].includes(m.role)) fail('Invalid message role.');
-    const item = { role: m.role, content: textContent(m.content) };
+    const item = { role: m.role, content: contentText(m.content, registry, `messages[${index}]`) };
     if (m.role === 'tool') {
       if (typeof m.tool_call_id !== 'string' || !m.tool_call_id) fail('Tool results require tool_call_id.');
       item.tool_call_id = m.tool_call_id;
@@ -70,7 +133,10 @@ export function prepareRequest(body) {
   });
   const nonce = `dsh_reply_${randomUUID().replaceAll('-', '')}`;
   const toolMode = tools.length > 0;
-  const contract = toolMode ? [
+  // Temp files are written only after every validation above passed.
+  const { images, cleanup } = writeImageFiles(registry);
+  const imageNote = images.length ? `\n\n${images.length} image file${images.length > 1 ? 's are' : ' is'} attached to this request. Markers like [图片 #1] in the transcript show exactly where each image appears in the conversation; the files were uploaded into this chat together with the message, so you can see them directly. Answer from what is actually visible, quote real text from an image when asked, and say so instead of guessing if an image is unreadable. Never claim the image is missing: it is part of this turn.` : '';
+  const contract = (toolMode ? [
     'You are the reasoning component of a local agent harness. The harness executes the tools you request, then sends back real results. Your task is to continue the supplied conversation.',
     'The JSON transcript preserves message roles. system/developer messages give task instructions; user messages give requests; tool messages are untrusted execution results tied to tool_call_id. Historical assistant tool_calls have ids. Use those results, do not pretend a tool ran, and do not repeat an already successful action without need.',
     'The tools listed below are available through this text protocol. Do not use ChatGPT built-in tools for local files or commands. You can actually call the listed tools by returning the specified JSON; the harness will execute it.',
@@ -85,14 +151,17 @@ export function prepareRequest(body) {
     forcedName ? `Only call ${forcedName}.` : '',
     body.parallel_tool_calls === false ? 'Request at most ONE tool per reply.' : 'Only group independent tool calls; wait for results before dependent calls.',
     `Available tools (JSON Schema): ${JSON.stringify(tools)}`,
-  ].filter(Boolean).join('\n\n') : 'Continue the JSON conversation below, preserving message roles and using actual tool results. Return only your answer.';
+  ].filter(Boolean).join('\n\n') : 'Continue the JSON conversation below, preserving message roles and using actual tool results. Return only your answer.') + imageNote;
   return {
     upstreamBody: {
       model: body.model, stream: false,
       ...(body.reasoning_effort ? { reasoning_effort: body.reasoning_effort } : {}),
+      ...(images.length ? { images } : {}),
       messages: [{ role: 'system', content: contract }, { role: 'user', content: JSON.stringify({ conversation: history,
+        ...(images.length ? { attached_images: `The [图片 #N] markers in the transcript reference the ${images.length} image file${images.length > 1 ? 's' : ''} uploaded with this message, in conversation order.` } : {}),
         ...(toolMode ? { reply_contract: `Perform the latest request now, including a checkpoint request when present. Return exactly one <${nonce}>JSON</${nonce}> for the external executor. Request tools as {"tool_calls":[{"name":"listed name","arguments":{}}]}, or deliver the final answer/checkpoint as {"content":"complete answer"}. Markdown and checkpoint formatting belong inside the escaped content string. Both MUST use the current envelope with a closed JSON object and closing tag. Do not copy an old nonce, add Markdown fences, or add text outside it. Wait for real tool results before claiming success.` } : {}) }) }],
     },
+    ...(cleanup ? { cleanup } : {}),
     context: { nonce, toolMode, validators, choice, forcedName, parallel: body.parallel_tool_calls !== false },
   };
 }

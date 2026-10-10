@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { prepareRequest, parseModelReply, completion, completionSSE } from '../protocol.mjs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { prepareRequest, parseModelReply, completion, completionSSE, sweepStaleUploads } from '../protocol.mjs';
 
 const readTool = {
   type: 'function',
@@ -206,3 +209,77 @@ for (const [name, override] of [
     assert.throws(() => prepareRequest(request(override)), err => err.status === 400 && err.code === 'invalid_request');
   });
 }
+
+// --- image attachments (local feature) ---------------------------------------
+const tinyPng = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
+const pngUrl = `data:image/png;base64,${tinyPng.toString('base64')}`;
+const uploadDir = () => {
+  const dir = mkdtempSync(join(tmpdir(), 'pcw-img-test-'));
+  process.env.PCW_UPLOAD_DIR = dir;
+  return dir;
+};
+
+test('base64 image parts become temp files with markers, dedupe and a cleanup hook', async t => {
+  const dir = uploadDir();
+  t.after(() => { rmSync(dir, { recursive: true, force: true }); delete process.env.PCW_UPLOAD_DIR; });
+  const prepared = prepareRequest(request({ messages: [
+    { role: 'user', content: [{ type: 'image_url', image_url: { url: pngUrl } }, { type: 'text', text: 'Read the top line of the image' }] },
+    { role: 'assistant', content: 'Understood.' },
+    { role: 'user', content: [{ type: 'image_url', image_url: { url: pngUrl } }] },
+  ] }));
+  assert.equal(prepared.upstreamBody.images.length, 1, 'identical bytes dedupe to one upload');
+  const image = prepared.upstreamBody.images[0];
+  assert.equal(image.media_type, 'image/png');
+  assert.equal(image.name, 'image-1.png');
+  assert.deepEqual(readFileSync(image.path), tinyPng);
+  const transcript = JSON.parse(prepared.upstreamBody.messages[1].content).conversation;
+  assert.equal(transcript[0].content, `[图片 #1]\nRead the top line of the image`);
+  assert.equal(transcript[1].content, 'Understood.');
+  assert.equal(transcript[2].content, '[图片 #1]', 'the repeated image references the first marker');
+  assert.match(prepared.upstreamBody.messages[0].content, /image file is attached/);
+  assert.match(prepared.upstreamBody.messages[0].content, /\[图片 #1\]/);
+  assert.equal(prepared.context.toolMode, true, 'tools stay available in image turns');
+  prepared.cleanup();
+  assert.equal(existsSync(image.path), false, 'cleanup deletes the temp file');
+});
+
+test('image content in the responses surface and whitespace-padded data URLs still parse', async t => {
+  const dir = uploadDir();
+  t.after(() => { rmSync(dir, { recursive: true, force: true }); delete process.env.PCW_UPLOAD_DIR; });
+  const padded = `data:image/png;base64, ${tinyPng.toString('base64').replace(/(.{20})/g, '$1\n')} `;
+  const prepared = prepareRequest(request({ messages: [{ role: 'user', content: [
+    { type: 'input_image', image_url: padded }, // responses-surface style part
+  ] }] }));
+  assert.equal(prepared.upstreamBody.images.length, 1);
+  assert.deepEqual(readFileSync(prepared.upstreamBody.images[0].path), tinyPng);
+});
+
+test('text-only requests keep the original prepareRequest shape', () => {
+  const prepared = prepareRequest(request());
+  assert.equal('images' in prepared.upstreamBody, false);
+  assert.equal('cleanup' in prepared, false);
+  assert.doesNotMatch(prepared.upstreamBody.messages[0].content, /image file/);
+  assert.equal(JSON.parse(prepared.upstreamBody.messages[1].content).attached_images, undefined);
+});
+
+for (const [name, parts] of [
+  ['svg images', [{ type: 'image_url', image_url: { url: `data:image/svg+xml;base64,${Buffer.from('<svg/>').toString('base64')}` } }]],
+  ['more than 8 images', Array.from({ length: 9 }, (_, i) => ({ type: 'image_url', image_url: { url: `data:image/gif;base64,${Buffer.from([i]).toString('base64')}` } }))],
+  ['empty image data', [{ type: 'image_url', image_url: { url: 'data:image/png;base64,' } }]],
+]) test(`image validation rejects ${name}`, () => {
+  assert.throws(() => prepareRequest(request({ messages: [{ role: 'user', content: parts }] })),
+    err => err.status === 400 && err.code === 'invalid_request');
+});
+
+test('sweepStaleUploads removes only stale pcw-img files', t => {
+  const dir = uploadDir();
+  t.after(() => { rmSync(dir, { recursive: true, force: true }); delete process.env.PCW_UPLOAD_DIR; });
+  const stale = join(dir, 'pcw-img-stale.png'), fresh = join(dir, 'pcw-img-fresh.png'), foreign = join(dir, 'other.png');
+  for (const path of [stale, fresh, foreign]) writeFileSync(path, 'x');
+  const old = new Date(Date.now() - 25 * 60 * 60 * 1000);
+  utimesSync(stale, old, old);
+  assert.equal(sweepStaleUploads(), 1);
+  assert.equal(existsSync(stale), false);
+  assert.equal(existsSync(fresh), true);
+  assert.equal(existsSync(foreign), true, 'non-bridge files are never touched');
+});

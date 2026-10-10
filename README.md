@@ -124,3 +124,76 @@ Set-Location ../chatweb-source-review
 上游0.1.1的MIT声明、来源和校验值见 [THIRD_PARTY.md](THIRD_PARTY.md)。
 缺失的原始通知没有被猜写，也没有被本项目MIT替代；仅分发补丁不能自动消除该资料缺口。
 公开前的具体状态见 [发布说明](PUBLISHING.md) 与 [本版状态](RELEASE-STATUS.json)。
+
+## 图片输入（本地扩展）
+
+本节是本地扩展记录，接在前面「不支持图片输入」的既有口径之后：对外口径不变，
+以下只描述本轮在本地打通并验证的图片输入链路及其边界。
+链路：DSH（本地 harness）→ `127.0.0.1:1457`（dsh-chat-tool-bridge，OpenAI 兼容 `/v1/chat/completions`）
+→ `127.0.0.1:1456`（pi-chatgpt-web-adapter）→ 受管 Chrome → `chatgpt.com`。
+
+- DSH 在 `messages[].content` 用 OpenAI content 数组携带图片；桥只接受 base64 data-URL，
+  解码校验后写入临时文件，由适配器在 chatgpt.com 页面内完成三步上传
+  （`POST /backend-api/files` → `PUT` Azure SAS → `POST …/uploaded`），
+  并随消息以 `multimodal_text` 提交。
+- 转写文本中每张图片出现 `[图片 #N]` 标记；同一请求内按 sha256 去重，重复图片复用同一编号。
+- http/https 形式的图片 URL 一律拒绝（`400 invalid_request`）：桥不会代替 harness 抓取远程内容。
+
+### 请求示例
+
+写法一（OpenAI `image_url` 部件）：
+
+```json
+{
+  "model": "gpt-5-6-thinking",
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        { "type": "text", "text": "图里第一行字是什么" },
+        { "type": "image_url", "image_url": { "url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg==" } }
+      ]
+    }
+  ]
+}
+```
+
+写法二（responses 风格 `input_image` 部件，桥同样接受）：
+
+```json
+{
+  "model": "gpt-5-6",
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        { "type": "input_image", "image_url": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg==" },
+        { "type": "text", "text": "图里第一行字是什么" }
+      ]
+    }
+  ]
+}
+```
+
+### 限制
+
+| 限制 | 取值 | 超限表现 |
+| --- | --- | --- |
+| 单请求图片数 | ≤ 8 张（sha256 去重后计数） | `400 invalid_request` |
+| 单张图片大小 | ≤ 20 MiB | `400 invalid_request` |
+| 请求体大小 | ≤ 32 MiB | `413`（Request too large） |
+| 图片来源 | 仅 `data:image/(png\|jpeg\|webp\|gif);base64,…`；http/https 一律拒绝 | `400 invalid_request` |
+
+### 模型开关
+
+- `dsh-chat-tools.patch.yml`：`gpt-5-6-thinking` 与 `gpt-5-6` 均声明 `input: [text, image]`，
+  DSH 侧才允许向这两个模型发送图片。
+- `web-model-metadata.json`：受审模型可加 `"image_input": true`，`model-routes.mjs` 据此生成
+  `input: ['text', 'image']` 的 DSH overlay；该值必须是布尔 `true`，其它取值拒绝加载。
+
+### 临时文件生命周期与清理
+
+- 写入位置：`<仓库目录>/.runtime/uploads/pcw-img-<uuid>.png|jpg|webp|gif`
+  （可用环境变量 `PCW_UPLOAD_DIR` 覆盖目录）。
+- 上游请求完成后即删；崩溃残留由启动清扫兜底：只删 `pcw-img-` 前缀且超过 24 小时的文件。
+- `.runtime/uploads` 不是留存记录，不要手工往里放文件，也不要依赖它跨会话保存图片。

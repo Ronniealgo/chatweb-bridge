@@ -24,12 +24,13 @@ export function createModelRegistry(document = { schema: 1, models: [] }) {
   const entries = new Map(legacy.map(([id, displayName]) => [id, { id, displayName, legacy: true }]));
   for (const original of document.models) {
     const row = structuredClone(original);
-    if (!keys(row, ['slug', 'display_name', 'thinking_efforts', 'reasoning_efforts', 'default_effort', 'context_window', 'max_output_tokens', 'evidence']) ||
+    if (!keys(row, ['slug', 'display_name', 'thinking_efforts', 'reasoning_efforts', 'default_effort', 'context_window', 'max_output_tokens', 'image_input', 'evidence']) ||
         !word(row.slug) || entries.has(row.slug) || typeof row.display_name !== 'string' || !row.display_name.trim() || row.display_name.length > 120 || /[\x00-\x1f]/.test(row.display_name) ||
         !Array.isArray(row.thinking_efforts) || !row.thinking_efforts.length || row.thinking_efforts.some(value => !word(value)) || new Set(row.thinking_efforts).size !== row.thinking_efforts.length ||
         !object(row.reasoning_efforts) || !Object.keys(row.reasoning_efforts).length || Object.entries(row.reasoning_efforts).some(([key, value]) => !effortKeys.has(key) || !row.thinking_efforts.includes(value)) ||
         !Object.hasOwn(row.reasoning_efforts, row.default_effort) ||
         !Number.isSafeInteger(row.context_window) || !Number.isSafeInteger(row.max_output_tokens) || row.max_output_tokens < 1 || row.context_window <= row.max_output_tokens ||
+        (row.image_input !== undefined && row.image_input !== true) ||
         !keys(row.evidence, ['source', 'captured_at', 'sha256']) || row.evidence.source !== 'chatgpt-web-account-metadata' ||
         typeof row.evidence.captured_at !== 'string' || !/^\d{4}-\d{2}-\d{2}T/.test(row.evidence.captured_at) || !Number.isFinite(Date.parse(row.evidence.captured_at)) ||
         !/^[a-f0-9]{64}$/.test(row.evidence.sha256 ?? '')) configError();
@@ -49,9 +50,11 @@ export function createModelRegistry(document = { schema: 1, models: [] }) {
     },
     dshPatch() {
       const models = [{ id: legacy[0][0], name: legacy[0][1], contextWindow: 140000, maxTokens: 32768,
+        input: ['text', 'image'],
         reasoningEfforts: { off: null, low: 'low', medium: 'medium', high: 'high', xhigh: 'high', max: 'max' } }];
       for (const row of entries.values()) if (!row.legacy) models.push({ id: row.id, name: row.displayName,
         contextWindow: row.metadata.context_window, maxTokens: row.metadata.max_output_tokens,
+        ...(row.metadata.image_input ? { input: ['text', 'image'] } : {}),
         reasoningEfforts: Object.fromEntries(Object.keys(row.metadata.reasoning_efforts).map(key => [key, key])) });
       // Add after the existing route patch. No agent-default-model or profile mutation.
       return [{ id: 'llm-pi-ai', name: '@deepseek-ai/dsh-llm-pi-ai', config: { providers: { 'chatgpt-chat-tools': { models } } } }];

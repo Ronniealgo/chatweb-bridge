@@ -122,3 +122,17 @@ test('handoff identity comes from the final answer bound to this user message', 
   assert.equal(result.observedModel, slug);
   verifyModelResult(reply(slug, { ...proof(), observed_model: result.observedModel, source: 'conversation-final' }), registry().route(request()));
 });
+
+test('image_input metadata declares image input in the DSH overlay and legacy routes ship it', () => {
+  const models = createModelRegistry({ schema: 1, models: [{ ...row(), image_input: true }] }).dshPatch()[0].config.providers['chatgpt-chat-tools'].models;
+  assert.deepEqual(models[1], { id: slug, name: row().display_name, contextWindow: 100000, maxTokens: 10000,
+    input: ['text', 'image'], reasoningEfforts: { low: 'low', max: 'max' } });
+  assert.deepEqual(models[0].input, ['text', 'image'], 'the legacy gpt-5-6-thinking route declares image input');
+});
+
+test('image_input metadata must be boolean true when present', () => {
+  for (const value of ['yes', 1, false, ['text']]) {
+    assert.throws(() => createModelRegistry({ schema: 1, models: [{ ...row(), image_input: value }] }), /Invalid reviewed/);
+  }
+  assert.doesNotThrow(() => createModelRegistry({ schema: 1, models: [row()] }));
+});
