@@ -2,7 +2,7 @@
 const net = require('node:net');
 const allowedHosts = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
 function check(host, port) {
-  if (!allowedHosts.has(host || 'localhost') || [1456, 1457].includes(Number(port)))
+  if (!allowedHosts.has(host || 'localhost') || [1456, 1457, 1458, 9200].includes(Number(port)))
     throw new Error('Offline fixture attempted a forbidden endpoint');
 }
 const connect = net.Socket.prototype.connect;

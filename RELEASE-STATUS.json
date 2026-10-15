@@ -1,16 +1,17 @@
 {
   "schema": 1,
   "project": "ChatWeb",
-  "version": "0.1.0-experimental.1",
-  "date": "2026-10-09",
-  "stage": "experimental-public-release",
+  "version": "0.3.0",
+  "date": "2026-10-15",
+  "stage": "tested-local-bridge-with-explicit-client-limitations",
   "publication": {
     "status": "public",
     "repositoryURL": "https://github.com/Ronniealgo/chatweb-bridge",
     "visibility": "public",
     "uploaded": true,
     "publishedDate": "2026-10-09",
-    "remaining": []
+    "remaining": [],
+    "scope": "Repository publication record; per-commit remote checks are authoritative for this source update."
   },
   "originalLicense": {
     "spdx": "MIT",
@@ -32,19 +33,25 @@
     "infringementDetermination": false
   },
   "acceptance": {
-    "existingWebChatTask": "confirmed complete by maintainer on 2026-10-09",
-    "repeatRequiredForThisDocumentationRelease": false,
-    "baselineOfflineTests": 427,
-    "baselineOfflineTestsBasis": "Executed baseline runner summary; parameterized cases expand at runtime. Not rerun for this documentation-only release.",
-    "baselineReconstructedRuntimeFiles": 42,
-    "externalMachineVerified": false,
-    "hostedCiExecuted": false
+    "report": "docs/engineering-acceptance.md",
+    "machineReadableResults": "docs/acceptance-results.json",
+    "fullLocalTests": 511,
+    "supplementalNegativeTests": 2,
+    "legacyTestsIncluded": 445,
+    "independentCoreReview": "passed-after-remediation",
+    "independentAdapterLifecycleReview": "passed",
+    "realGeminiToolRoundtrip": true,
+    "realBrowserRecovery": true,
+    "realServiceRecovery": true,
+    "hermesCli": "blocked-before-inference-by-host-source-update",
+    "otherHostRealWebsiteVerified": false,
+    "ciWorkflow": ".github/workflows/offline-regression.yml"
   },
   "privacy": {
     "auditedBaseArtifact": "ChatWeb-MIT-local-review-20261009.zip",
     "auditedBaseSHA256": "bf358531754eb8a209d66bc716c19fc140a3371745085dac8164f4ac26e4a4c4",
     "auditedBaseHashScope": "SHA256 of the entire previously audited ZIP, not SOURCE-SHA256.json or this version. Baseline evidence is retained outside this distribution.",
-    "scope": "unchanged files match audited base; changed documentation and release metadata receive focused review; final file list is release-files.json"
+    "scope": "Allowlisted source export only; browser profiles, auth files, cookies, diagnostics and machine configuration are excluded. New core and lifecycle code independently reviewed."
   },
   "security": {
     "defaultListenHost": "127.0.0.1",
@@ -59,5 +66,5 @@
     "officialSupport": false,
     "unlimitedQuota": false
   },
-  "scope": "documentation and release metadata only; runtime source, dependency resolution and model configuration unchanged"
+  "scope": "Reusable web-model protocol/core, Gemini adapter, existing ChatGPT runtime adapter, bounded lifecycle, hidden Windows supervisor and explicit acceptance limits. Legacy entry points preserved."
 }

@@ -1,0 +1,124 @@
+{
+  "date": "2026-10-15",
+  "version": "0.3.0",
+  "environment": "maintainer Windows host; installed Chrome; local authenticated Gemini mode",
+  "full_suite": {
+    "tests": 511,
+    "passed": 511,
+    "failed": 0,
+    "cancelled": 0,
+    "skipped": 0,
+    "includes_real_chrome_local_fixtures": true
+  },
+  "supplemental_regressions": {
+    "tests": 2,
+    "passed": 2,
+    "cases": [
+      "ignored submission is not replayed",
+      "unfinished generation is not returned as success"
+    ]
+  },
+  "legacy_suite": {
+    "tests": 445,
+    "passed": 445,
+    "included_in_full_suite": true
+  },
+  "focused_core_after_review": {
+    "tests": 32,
+    "passed": 32
+  },
+  "independent_reviews": {
+    "core": "passed after five reproduced fixes",
+    "gemini_and_windows": "passed"
+  },
+  "real_site_checks": [
+    {
+      "case": "tool-request",
+      "observed_at": "2026-10-15T07:44:00.517Z",
+      "elapsed_ms": 61919,
+      "marker": "LIVE_aee89ed5",
+      "request_id": "8435ed62-e962-430e-b605-509bd9f527ab",
+      "pass": true
+    },
+    {
+      "case": "tool-result-roundtrip",
+      "observed_at": "2026-10-15T07:44:00.517Z",
+      "elapsed_ms": 86714,
+      "marker": "LIVE_aee89ed5",
+      "request_id": "d51a62c3-6ed0-4d2b-887c-426bc453a69d",
+      "pass": true
+    },
+    {
+      "case": "concurrent-A",
+      "observed_at": "2026-10-15T07:44:42.880Z",
+      "elapsed_ms": 42152,
+      "marker": "LIVE_b978b3b1_A",
+      "pass": true
+    },
+    {
+      "case": "concurrent-B",
+      "observed_at": "2026-10-15T07:44:42.880Z",
+      "elapsed_ms": 22407,
+      "marker": "LIVE_b978b3b1_B",
+      "pass": true
+    },
+    {
+      "case": "after-real-browser-close",
+      "observed_at": "2026-10-15T08:10:22.256Z",
+      "elapsed_ms": 30004,
+      "marker": "LIVE_85d8b385",
+      "readiness_after_close": 503,
+      "pass": true
+    },
+    {
+      "case": "after-real-service-crash",
+      "observed_at": "2026-10-15T08:14:19.637Z",
+      "elapsed_ms": 25164,
+      "marker": "LIVE_046caddf",
+      "supervisor_restart_verified": true,
+      "pass": true
+    },
+    {
+      "case": "fixed-release-after-desktop-cold-start",
+      "observed_at": "2026-10-15T09:15:15.272Z",
+      "elapsed_ms": 25428,
+      "marker": "LIVE_5c15fed3",
+      "pass": true
+    }
+  ],
+  "hermes_cli": {
+    "status": "blocked_before_inference",
+    "timeout_seconds": 400,
+    "bridge_requests_from_probe": 0,
+    "artifact_exists": false,
+    "reason": "Host CLI was completing an interrupted source update and stalled at Node dependency preparation.",
+    "client_restarted": false
+  },
+  "scope_notes": [
+    "Tool roundtrip used the reference client with a real local echo_marker function; it was not the blocked Hermes terminal/file task.",
+    "ChatGPT adapter retains reviewed routing and passed regression tests; no new live ChatGPT-account test was performed.",
+    "The website model label is not cryptographic evidence of the underlying model identity.",
+    "Prior failed probes are not hidden: input/mode issues were corrected; one generation timed out and returned a structured failure.",
+    "No SLA, unlimited quota, native token streaming, or all-agent compatibility claim."
+  ],
+  "packaged_universal_suite": {
+    "tests": 68,
+    "passed": 68,
+    "failed": 0,
+    "cancelled": 0,
+    "skipped": 0,
+    "executed_from_fixed_release": true
+  },
+  "deployment": {
+    "release_id": "0.3.0-b924348aae2d",
+    "source_files_verified": 120,
+    "dependencies_installed_offline": true,
+    "node_version": "24.19.0",
+    "desktop_lnk_cold_start": "passed",
+    "repeated_desktop_launch": "same service PID; one worker; one supervisor",
+    "launcher_exit_survival": "passed; no launcher process remained",
+    "service_console_window": false,
+    "cdp_port_listening": false,
+    "hermes_client_restarted": false
+  }
+}

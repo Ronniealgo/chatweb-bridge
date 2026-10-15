@@ -33,3 +33,6 @@ Login Data
 # Installation and reconstruction scratch; never source.
 .build/
 SOURCE-SHA256.json
+.state/
+*.local.json
+bridge.local.json
