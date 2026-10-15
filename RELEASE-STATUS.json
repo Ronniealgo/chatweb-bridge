@@ -45,7 +45,12 @@
     "realServiceRecovery": true,
     "hermesCli": "blocked-before-inference-by-host-source-update",
     "otherHostRealWebsiteVerified": false,
-    "ciWorkflow": ".github/workflows/offline-regression.yml"
+    "ciWorkflow": ".github/workflows/offline-regression.yml",
+    "packagedUniversalTests": 69,
+    "hostedWindowsTests": 496,
+    "hostedWindowsCodeCommit": "6d18cee36c025d8ed16d400defb5176755552c51",
+    "hostedWindowsCi": "passed",
+    "currentRuntime": "0.3.0-aa7ecf881140"
   },
   "privacy": {
     "auditedBaseArtifact": "ChatWeb-MIT-local-review-20261009.zip",
