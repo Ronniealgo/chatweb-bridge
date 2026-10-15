@@ -1,0 +1,35 @@
+{
+  "schema": 1,
+  "host": "127.0.0.1",
+  "port": 1459,
+  "stateDir": "../.state",
+  "authFile": "../.state/auth.json",
+  "limits": {
+    "maxQueue": 4,
+    "queueTimeoutMs": 60000,
+    "requestTimeoutMs": 150000,
+    "cancelGraceMs": 3000
+  },
+  "providers": [
+    {
+      "type": "gemini",
+      "id": "gemini",
+      "profileDir": "../.state/gemini-profile",
+      "executablePath": "C:/Program Files/Google/Chrome/Application/chrome.exe",
+      "headless": false,
+      "models": [
+        {
+          "id": "gemini-4-argon",
+          "label": "Argon"
+        }
+      ]
+    },
+    {
+      "type": "chatgpt",
+      "id": "chatgpt",
+      "upstream": "http://127.0.0.1:1456",
+      "tokenEnv": "PCW_INTERNAL_TOKEN",
+      "registryFile": "../web-model-metadata.json"
+    }
+  ]
+}

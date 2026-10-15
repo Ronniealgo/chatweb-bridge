@@ -1,0 +1,60 @@
+<!doctype html><meta charset="utf-8"><title>Offline Gemini DOM contract fixture (not live E2E)</title>
+<style>[hidden]{display:none!important} .ql-editor{white-space:pre-wrap;min-height:50px} user-query,model-response,message-content{display:block}</style>
+<button aria-label="New chat" id="reset">New chat</button>
+<button class="input-area-switch" aria-haspopup="menu"><span class="model-label">Argon</span></button>
+<div role="menu" hidden><button role="menuitemradio">Argon</button><button role="menuitemradio">Fast</button></div>
+<div id="thread"></div>
+<rich-textarea><div contenteditable="true" class="ql-editor" role="textbox"></div></rich-textarea>
+<button aria-label="Send message" id="send">Send</button><button aria-label="Stop response" id="stop" hidden>Stop</button>
+<script>
+const cfg = window.fixtureOptions || {};
+const editor = document.querySelector('.ql-editor');
+const thread = document.querySelector('#thread');
+const send = document.querySelector('#send');
+const stop = document.querySelector('#stop');
+const picker = document.querySelector('.input-area-switch');
+const menu = document.querySelector('[role=menu]');
+if (cfg.resetUnavailable) document.querySelector('#reset').remove();
+picker.querySelector('span').textContent = cfg.selectedLabel || 'Argon';
+window.fixtureState = { submits: [], resets: 0 };
+if (cfg.realLayout) {
+  const duplicate = document.querySelector('#reset').cloneNode(true); duplicate.id = 'reset-alternate'; document.body.append(duplicate);
+  const clip = document.createElement('div'); clip.className='ql-clipboard'; clip.contentEditable='true'; document.querySelector('rich-textarea').append(clip);
+  picker.hidden = true; editor.addEventListener('input', () => { picker.hidden = false; });
+}
+if (cfg.ignoreReset) thread.innerHTML = '<user-query>stale</user-query><model-response>stale</model-response>';
+if (cfg.dropInput) editor.addEventListener('input', () => setTimeout(() => { editor.textContent = ''; }, 5));
+picker.onclick = () => { menu.hidden = false; };
+for (const option of menu.children) option.onclick = () => {
+  if (!cfg.ignoreSelection) picker.querySelector('span').textContent = option.textContent;
+  menu.hidden = true;
+};
+if (!cfg.resetUnavailable) document.querySelector('#reset').onclick = () => {
+  window.fixtureState.resets++;
+  if (!cfg.ignoreReset) thread.replaceChildren(); editor.textContent = '';
+};
+send.onclick = async () => {
+  const text = editor.innerText;
+  window.fixtureState.submits.push(text);
+  await window.recordFixtureSubmit(text, picker.innerText);
+  if (cfg.ignoreSubmission) return;
+  editor.textContent = '';
+  const user = document.createElement('user-query'); user.textContent = text; thread.append(user);
+  const response = document.createElement('model-response');
+  response.setAttribute('aria-busy', 'true');
+  const content = document.createElement('message-content');
+  const markdown = document.createElement('div'); markdown.className = 'markdown';
+  content.append(markdown); response.append(content); thread.append(response);
+  send.disabled = true; stop.hidden = false; markdown.textContent = 'partial';
+  if (cfg.neverFinish) return;
+  setTimeout(() => {
+    markdown.textContent = 'Verified complete response.';
+    response.setAttribute('aria-busy', 'false');
+    const copy = document.createElement('button'); copy.setAttribute('aria-label',cfg.copyLabel || 'Copy response');
+    response.append(copy); send.disabled = Boolean(cfg.disableAfterSubmit); stop.hidden = true;
+  }, 100);
+};
+if (cfg.access === 'login') document.body.innerHTML = '<a href="https://accounts.google.com/ServiceLogin">Sign in</a>';
+if (cfg.access === 'challenge') document.body.innerHTML = '<div id="captcha">Verify you are human</div>';
+window.recordFixtureReady?.();
+</script>

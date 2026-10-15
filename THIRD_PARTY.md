@@ -155,3 +155,7 @@ above will be removed.
 This notice covers the upstream portions only. The project’s own original
 contributions remain under their separate MIT grant recorded in LICENSE and
 LICENSE-SCOPE.md; neither grant replaces the other.
+
+## Universal bridge dependency
+
+`playwright-core` 1.64.1 is an installed third-party dependency licensed under Apache-2.0. Its package license and notices remain with the dependency; the project MIT grant does not relicense it. The pinned package and registry integrity are recorded in the root package-lock.json. Browser binaries and browser/account profiles are not redistributed.

@@ -1,0 +1,164 @@
+{
+  "date": "2026-10-15",
+  "version": "0.3.0",
+  "environment": "maintainer Windows host; installed Chrome; local authenticated Gemini mode",
+  "full_suite": {
+    "tests": 514,
+    "passed": 514,
+    "failed": 0,
+    "cancelled": 0,
+    "skipped": 0,
+    "includes_real_chrome_local_fixtures": true,
+    "duration_ms": 122328.3276
+  },
+  "supplemental_regressions": {
+    "tests": 2,
+    "passed": 2,
+    "cases": [
+      "ignored submission is not replayed",
+      "unfinished generation is not returned as success"
+    ]
+  },
+  "legacy_suite": {
+    "tests": 445,
+    "passed": 445,
+    "included_in_full_suite": true
+  },
+  "focused_core_after_review": {
+    "tests": 32,
+    "passed": 32
+  },
+  "independent_reviews": {
+    "core": "passed after five reproduced fixes",
+    "gemini_and_windows": "passed"
+  },
+  "real_site_checks": [
+    {
+      "case": "tool-request",
+      "observed_at": "2026-10-15T07:44:00.517Z",
+      "elapsed_ms": 61919,
+      "marker": "LIVE_aee89ed5",
+      "request_id": "8435ed62-e962-430e-b605-509bd9f527ab",
+      "pass": true
+    },
+    {
+      "case": "tool-result-roundtrip",
+      "observed_at": "2026-10-15T07:44:00.517Z",
+      "elapsed_ms": 86714,
+      "marker": "LIVE_aee89ed5",
+      "request_id": "d51a62c3-6ed0-4d2b-887c-426bc453a69d",
+      "pass": true
+    },
+    {
+      "case": "concurrent-A",
+      "observed_at": "2026-10-15T07:44:42.880Z",
+      "elapsed_ms": 42152,
+      "marker": "LIVE_b978b3b1_A",
+      "pass": true
+    },
+    {
+      "case": "concurrent-B",
+      "observed_at": "2026-10-15T07:44:42.880Z",
+      "elapsed_ms": 22407,
+      "marker": "LIVE_b978b3b1_B",
+      "pass": true
+    },
+    {
+      "case": "after-real-browser-close",
+      "observed_at": "2026-10-15T08:10:22.256Z",
+      "elapsed_ms": 30004,
+      "marker": "LIVE_85d8b385",
+      "readiness_after_close": 503,
+      "pass": true
+    },
+    {
+      "case": "after-real-service-crash",
+      "observed_at": "2026-10-15T08:14:19.637Z",
+      "elapsed_ms": 25164,
+      "marker": "LIVE_046caddf",
+      "supervisor_restart_verified": true,
+      "pass": true
+    },
+    {
+      "case": "fixed-release-after-desktop-cold-start",
+      "observed_at": "2026-10-15T09:15:15.272Z",
+      "elapsed_ms": 25428,
+      "marker": "LIVE_5c15fed3",
+      "pass": true
+    },
+    {
+      "case": "final-package-first-call-mode-unverified",
+      "observed_at": "2026-10-15T10:29:49.079Z",
+      "elapsed_ms": 32536,
+      "pass": false,
+      "error": "model_selection_failed",
+      "generation_submitted": false,
+      "request_id": "510bde5f-07ab-4447-9e5b-573c9548e879"
+    },
+    {
+      "case": "final-package-subsequent-new-request",
+      "observed_at": "2026-10-15T10:32:33.486Z",
+      "elapsed_ms": 33013,
+      "marker": "LIVE_0ec01d18",
+      "pass": true
+    }
+  ],
+  "hermes_cli": {
+    "status": "blocked_before_inference",
+    "timeout_seconds": 400,
+    "bridge_requests_from_probe": 0,
+    "artifact_exists": false,
+    "reason": "Host CLI was completing an interrupted source update and stalled at Node dependency preparation.",
+    "client_restarted": false
+  },
+  "scope_notes": [
+    "Tool roundtrip used the reference client with a real local echo_marker function; it was not the blocked Hermes terminal/file task.",
+    "ChatGPT adapter retains reviewed routing and passed regression tests; no new live ChatGPT-account test was performed.",
+    "The website model label is not cryptographic evidence of the underlying model identity.",
+    "Prior failed probes are not hidden: input/mode issues were corrected; one generation timed out and returned a structured failure.",
+    "No SLA, unlimited quota, native token streaming, or all-agent compatibility claim.",
+    "The final package first rejected an unverified mode before submission; a separately initiated request then succeeded. No automatic generation replay occurred. The transient page cause was not established."
+  ],
+  "packaged_universal_suite": {
+    "tests": 69,
+    "passed": 69,
+    "failed": 0,
+    "cancelled": 0,
+    "skipped": 0,
+    "executed_from_fixed_release": true
+  },
+  "deployment": {
+    "release_id": "0.3.0-aa7ecf881140",
+    "source_files_verified": 120,
+    "dependencies_installed_offline": true,
+    "node_version": "24.19.0",
+    "desktop_lnk_cold_start": "passed",
+    "repeated_desktop_launch": "same service PID; one worker; one supervisor",
+    "launcher_exit_survival": "passed; bounded wait for launchers to finish; one worker and one supervisor; no restart",
+    "service_console_window": false,
+    "cdp_port_listening": false,
+    "hermes_client_restarted": false,
+    "source_commit": "6d18cee36c025d8ed16d400defb5176755552c51"
+  },
+  "windows_ci_remediation": {
+    "issue": "Windows 8.3 path aliases compared as literal argv strings",
+    "locally_reproduced": true,
+    "local_red": "supervisor_identity_not_verified",
+    "fix": "Compare validated absolute paths after Windows PowerShell 5.1 expansion; retain PID/creation-time, raw command-line and exact flag checks.",
+    "local_windows_cases_passed": 15,
+    "hosted_ci": "passed",
+    "independent_review": "passed; no security or logic regressions"
+  },
+  "hosted_ci": {
+    "code_commit": "6d18cee36c025d8ed16d400defb5176755552c51",
+    "runs": [
+      38719344298,
+      38719350572
+    ],
+    "status": "success",
+    "tests": 496,
+    "passed": 496,
+    "failed": 0,
+    "optional_real_chrome_fixture_suite": "not enabled in hosted CI; included in 514 local tests"
+  }
+}

@@ -1,0 +1,17 @@
+# Overlay only. Does not replace the user's default model.
+- id: llm-pi-ai
+  name: "@deepseek-ai/dsh-llm-pi-ai"
+  config:
+    providers:
+      web-models:
+        displayName: Web models through ChatWeb
+        api: openai-completions
+        baseURL: http://127.0.0.1:1458/v1
+        apiKeyEnv: GOOGLE_WEB_TOKEN
+        retryPolicy:
+          mode: normal
+          maxRetries: 0
+        models:
+          - id: gemini-4-argon
+            name: Gemini web - configured Argon mode
+            input: [text]
