@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync, spawn } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, cpSync, existsSync, rmSync, readdirSync, statSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, cpSync, existsSync, rmSync, readdirSync, statSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -14,7 +14,7 @@ const ps = windows ? join(process.env.SystemRoot, 'System32/WindowsPowerShell/v1
 const scratch = process.env.TMPDIR || tmpdir();
 const pause = ms => new Promise(r => setTimeout(r, ms));
 function sandbox(t, extra = {}) {
-  const dir = mkdtempSync(join(scratch, 'chatweb-windows-'));
+  const dir = realpathSync.native(mkdtempSync(join(scratch, 'chatweb-windows-')));
   const repo = join(dir, 'checkout with spaces');
   mkdirSync(join(repo, 'scripts'), { recursive: true });
   for (const file of ['universal-windows.ps1', 'universal-supervisor.ps1']) {
@@ -70,8 +70,9 @@ function alive(pid) {
 test('real hidden supervisor restarts a crashed child, bounds logs, and honors stop marker', { skip: !windows, timeout: 60000 }, async t => {
   const port = await freePort();
   const box = sandbox(t, { port, fixture: { crashOnce: true, logs: true } });
+  const aliases = invoke('aliases', box);
   const launched = spawn(ps, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File',
-    join(box.repo, 'scripts/universal-supervisor.ps1'), '-ConfigPath', box.config, '-NodePath', process.execPath,
+    aliases.supervisorPath, '-ConfigPath', aliases.configPath, '-NodePath', aliases.nodePath,
     '-LogMaxBytes', '32768', '-LogKeepFiles', '2'], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
   let diagnostics = '';
   launched.stdout.on('data', value => { diagnostics += value; });
@@ -124,6 +125,13 @@ test('real hidden supervisor restarts a crashed child, bounds logs, and honors s
   assert.ok(existsSync(join(box.stateDir, 'fixture-shutdowns.jsonl')), 'stop prefers authenticated graceful shutdown');
   await pause(1500);
   assert.equal(launches().length, 2, 'stop must not restart the child');
+});
+
+test('absolute path aliases do not admit relative, foreign or injected paths', { skip: !windows }, t => {
+  assert.deepEqual(invoke('path-equality', sandbox(t)), {
+    alias: true, relative: false, driveRelative: false, rootRelative: false,
+    otherFile: false, suffix: false, injectedQuote: false,
+  });
 });
 
 test('owned manager starts once, distinguishes readiness, stops, and uninstalls only its shortcut', { skip: !windows }, t => {

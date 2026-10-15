@@ -3,12 +3,13 @@
   "version": "0.3.0",
   "environment": "maintainer Windows host; installed Chrome; local authenticated Gemini mode",
   "full_suite": {
-    "tests": 511,
-    "passed": 511,
+    "tests": 514,
+    "passed": 514,
     "failed": 0,
     "cancelled": 0,
     "skipped": 0,
-    "includes_real_chrome_local_fixtures": true
+    "includes_real_chrome_local_fixtures": true,
+    "duration_ms": 122328.3276
   },
   "supplemental_regressions": {
     "tests": 2,
@@ -120,5 +121,13 @@
     "service_console_window": false,
     "cdp_port_listening": false,
     "hermes_client_restarted": false
+  },
+  "windows_ci_remediation": {
+    "issue": "Windows 8.3 path aliases compared as literal argv strings",
+    "locally_reproduced": true,
+    "local_red": "supervisor_identity_not_verified",
+    "fix": "Compare validated absolute paths after Windows PowerShell 5.1 expansion; retain PID/creation-time, raw command-line and exact flag checks.",
+    "local_windows_cases_passed": 15,
+    "hosted_ci": "pending_after_fix"
   }
 }

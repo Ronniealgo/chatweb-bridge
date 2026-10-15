@@ -21,6 +21,24 @@ if ($Mode -eq 'context') {
         nodePath=$context.NodePath; configId=$context.ConfigId
         args=@(Split-ChatwebCommandLine $argsLine)
     } | ConvertTo-Json -Compress -Depth 5
+} elseif ($Mode -eq 'aliases') {
+    $fs = New-Object -ComObject Scripting.FileSystemObject
+    [ordered]@{
+        supervisorPath=$fs.GetFile($context.SupervisorPath).ShortPath
+        configPath=$fs.GetFile($context.ConfigPath).ShortPath
+        nodePath=$fs.GetFile($context.NodePath).ShortPath
+    } | ConvertTo-Json -Compress
+} elseif ($Mode -eq 'path-equality') {
+    $fs = New-Object -ComObject Scripting.FileSystemObject
+    [ordered]@{
+        alias=(Test-ChatwebSameAbsolutePath $fs.GetFile($context.ConfigPath).ShortPath $context.ConfigPath)
+        relative=(Test-ChatwebSameAbsolutePath '.\bridge config.json' $context.ConfigPath)
+        driveRelative=(Test-ChatwebSameAbsolutePath 'C:bridge config.json' $context.ConfigPath)
+        rootRelative=(Test-ChatwebSameAbsolutePath '\bridge config.json' $context.ConfigPath)
+        otherFile=(Test-ChatwebSameAbsolutePath $context.AuthFile $context.ConfigPath)
+        suffix=(Test-ChatwebSameAbsolutePath ($context.ConfigPath + '.other') $context.ConfigPath)
+        injectedQuote=(Test-ChatwebSameAbsolutePath ($context.ConfigPath + '" -Command exit') $context.ConfigPath)
+    } | ConvertTo-Json -Compress
 } elseif ($Mode -eq 'tasks') {
     $global:FixtureTask = $null
     $global:Registered = 0; $global:Started = 0; $global:Stopped = 0; $global:Removed = 0

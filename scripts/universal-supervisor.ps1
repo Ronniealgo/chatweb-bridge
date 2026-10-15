@@ -111,6 +111,19 @@ function Resolve-ChatwebPath([string]$Value, [string]$Base) {
     return [IO.Path]::GetFullPath($Value)
 }
 
+function Test-ChatwebSameAbsolutePath([string]$Actual, [string]$Expected) {
+    # PowerShell 5.1 expands existing 8.3 names in GetFullPath, whereas process
+    # argv can retain them. Compare equivalent absolute paths, never substrings
+    # or relative paths. Keep PID/time and recorded command-line checks intact.
+    foreach ($path in @($Actual, $Expected)) {
+        if ($path -notmatch '^(?:[A-Za-z]:[\\/]|\\\\[^\\/]+[\\/][^\\/]+[\\/])') { return $false }
+    }
+    try {
+        return [string]::Equals((Resolve-ChatwebPath $Actual $script:ChatwebScriptsRoot),
+            (Resolve-ChatwebPath $Expected $script:ChatwebScriptsRoot), [StringComparison]::OrdinalIgnoreCase)
+    } catch { return $false }
+}
+
 function Read-ChatwebJson([string]$Path) {
     if (!(Test-Path -LiteralPath $Path -PathType Leaf)) { return $null }
     try { return [IO.File]::ReadAllText($Path, [Text.Encoding]::UTF8) | ConvertFrom-Json }
@@ -205,14 +218,18 @@ function Test-ChatwebProcessRecord($Context, $Record, [string]$Kind) {
         $arguments = @(Split-ChatwebCommandLine $current.commandLine)
         if ($Kind -eq 'child') {
             $expected = @($Context.NodePath, $Context.ScriptPath, 'serve', '--config', $Context.ConfigPath)
-            if ($current.executablePath -ine $Context.NodePath -or $arguments.Count -ne $expected.Count) { return $false }
-            for ($i = 0; $i -lt $expected.Count; $i++) { if ($arguments[$i] -ine $expected[$i]) { return $false } }
+            if (!(Test-ChatwebSameAbsolutePath $current.executablePath $Context.NodePath) -or $arguments.Count -ne $expected.Count) { return $false }
+            for ($i = 0; $i -lt $expected.Count; $i++) {
+                if ($i -in @(0, 1, 4)) {
+                    if (!(Test-ChatwebSameAbsolutePath $arguments[$i] $expected[$i])) { return $false }
+                } elseif ($arguments[$i] -ine $expected[$i]) { return $false }
+            }
         } elseif ($Kind -eq 'supervisor') {
-            if ($current.executablePath -ine $Context.PowerShellPath) { return $false }
+            if (!(Test-ChatwebSameAbsolutePath $current.executablePath $Context.PowerShellPath)) { return $false }
             # Require the actual script and exact config, not a substring in -Command.
             foreach ($pair in @(@('-File', $Context.SupervisorPath), @('-ConfigPath', $Context.ConfigPath), @('-NodePath', $Context.NodePath))) {
                 $positions = @(for ($i = 1; $i -lt $arguments.Count; $i++) { if ($arguments[$i] -ieq $pair[0]) { $i } })
-                if ($positions.Count -ne 1 -or $positions[0] + 1 -ge $arguments.Count -or $arguments[$positions[0] + 1] -ine $pair[1]) { return $false }
+                if ($positions.Count -ne 1 -or $positions[0] + 1 -ge $arguments.Count -or !(Test-ChatwebSameAbsolutePath $arguments[$positions[0] + 1] $pair[1])) { return $false }
             }
             if (@($arguments | Where-Object { $_ -imatch '^-(?:Command|EncodedCommand|c|ec)$' }).Count) { return $false }
         } else { return $false }

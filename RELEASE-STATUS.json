@@ -35,7 +35,7 @@
   "acceptance": {
     "report": "docs/engineering-acceptance.md",
     "machineReadableResults": "docs/acceptance-results.json",
-    "fullLocalTests": 511,
+    "fullLocalTests": 514,
     "supplementalNegativeTests": 2,
     "legacyTestsIncluded": 445,
     "independentCoreReview": "passed-after-remediation",
